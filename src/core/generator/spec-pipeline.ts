@@ -479,7 +479,7 @@ export class SpecGenerationPipeline {
     let architecture: ArchitectureSynthesis;
     if (this.shouldRunStage('architecture')) {
       logger.analysis('Running Stage 5: Architecture Synthesis');
-      const result = await this.runStage5(survey, entities, services, endpoints, depGraph);
+      const result = await this.runStage5(survey, entities, services, endpoints, depGraph, llmContext.callGraph);
       if (result.success && result.data) {
         architecture = result.data;
         totalTokens += result.tokens;
@@ -878,7 +878,8 @@ ${fileListingSection}`;
     entities: ExtractedEntity[],
     services: ExtractedService[],
     endpoints: ExtractedEndpoint[],
-    depGraph?: DependencyGraphResult
+    depGraph?: DependencyGraphResult,
+    callGraph?: import('../analyzer/call-graph.js').SerializedCallGraph
   ): Promise<StageResult<ArchitectureSynthesis>> {
     const startTime = Date.now();
 
@@ -897,7 +898,15 @@ ${depGraph ? `Dependency Graph:
 - Nodes: ${depGraph.statistics.nodeCount}
 - Edges: ${depGraph.statistics.edgeCount}
 - Clusters: ${depGraph.statistics.clusterCount}
-- Cycles: ${depGraph.statistics.cycleCount}` : ''}`;
+- Cycles: ${depGraph.statistics.cycleCount}` : ''}${callGraph && callGraph.stats.totalNodes > 0 ? `
+
+Call Graph (static analysis — ${callGraph.stats.totalNodes} functions, ${callGraph.stats.totalEdges} internal calls):
+${callGraph.hubFunctions.length > 0 ? `Hub functions (called by many others — likely integration points):
+${callGraph.hubFunctions.slice(0, 8).map(n => `- ${n.name} (${n.filePath}, fanIn=${n.fanIn}, fanOut=${n.fanOut}${n.className ? `, class=${n.className}` : ''})`).join('\n')}` : ''}
+${callGraph.entryPoints.length > 0 ? `\nEntry points (no internal callers — likely public API or CLI handlers):
+${callGraph.entryPoints.slice(0, 8).map(n => `- ${n.name} (${n.filePath}${n.isAsync ? ', async' : ''})`).join('\n')}` : ''}
+${callGraph.layerViolations.length > 0 ? `\nLayer violations detected:
+${callGraph.layerViolations.slice(0, 5).map(v => `- ${v.reason}`).join('\n')}` : ''}` : ''}`;
 
     try {
       const result = await this.llm.completeJSON<ArchitectureSynthesis>({

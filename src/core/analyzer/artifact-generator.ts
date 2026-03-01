@@ -117,6 +117,8 @@ export interface LLMContext {
   phase3_validation: LLMContextPhase;
   /** Compact signatures for ALL analyzed files — used by Stage 1 instead of bare file paths */
   signatures?: import('./signature-extractor.js').FileSignatureMap[];
+  /** Static call graph: function→function relationships across all TS/Python files */
+  callGraph?: import('./call-graph.js').SerializedCallGraph;
 }
 
 /**
@@ -866,19 +868,58 @@ export class AnalysisArtifactGenerator {
       totalTokens: phase3Files.reduce((sum, f) => sum + f.tokens, 0),
     };
 
-    // Signature extraction for ALL analyzed files (used in Stage 1)
+    // Signature extraction + call graph for ALL analyzed files
+    // Read each file once and reuse the content for both operations.
     const { extractSignatures } = await import('./signature-extractor.js');
+    const { CallGraphBuilder, serializeCallGraph } = await import('./call-graph.js');
+    const { detectLanguage } = await import('./signature-extractor.js');
+
     const signatures: import('./signature-extractor.js').FileSignatureMap[] = [];
+    const callGraphFiles: Array<{ path: string; content: string; language: string }> = [];
+
     for (const file of repoMap.allFiles) {
       try {
         const content = await readFile(file.absolutePath, 'utf-8');
+        // Signatures (all languages)
         const map = extractSignatures(file.path, content);
         if (map.entries.length > 0) {
           signatures.push(map);
         }
+        // Call graph (Python + TypeScript/JavaScript only)
+        const lang = detectLanguage(file.path);
+        if (lang === 'Python' || lang === 'TypeScript' || lang === 'JavaScript') {
+          callGraphFiles.push({ path: file.path, content, language: lang });
+        }
       } catch {
         // skip unreadable files
       }
+    }
+
+    // Build call graph from collected files
+    const builder = new CallGraphBuilder();
+    const callGraphResult = await builder.build(callGraphFiles);
+    const callGraph = serializeCallGraph(callGraphResult);
+
+    // Refactoring priorities (structural — no requirements yet, enriched after generate)
+    const { analyzeForRefactoring } = await import('./refactor-analyzer.js');
+    let mappings: import('./refactor-analyzer.js').MappingEntry[] | undefined;
+    try {
+      const mappingRaw = await readFile(join(this.options.outputDir, 'mapping.json'), 'utf-8');
+      const mappingJson = JSON.parse(mappingRaw);
+      mappings = mappingJson.mappings as import('./refactor-analyzer.js').MappingEntry[];
+    } catch {
+      // mapping.json not yet available (first analyze before generate) — that's fine
+    }
+    const refactorReport = analyzeForRefactoring(callGraph, mappings);
+
+    // Save refactor priorities immediately (not part of llm-context.json — too verbose for LLM)
+    try {
+      await writeFile(
+        join(this.options.outputDir, 'refactor-priorities.json'),
+        JSON.stringify(refactorReport, null, 2)
+      );
+    } catch {
+      // non-fatal if output dir doesn't exist yet
     }
 
     return {
@@ -886,6 +927,7 @@ export class AnalysisArtifactGenerator {
       phase2_deep: phase2,
       phase3_validation: phase3,
       signatures,
+      callGraph,
     };
   }
 }

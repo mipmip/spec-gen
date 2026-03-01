@@ -65,6 +65,9 @@
     "glob": "^11.0.0",
     "ignore": "^6.0.2",
     "ora": "^8.1.1",
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-python": "^0.23.6",
+    "tree-sitter-typescript": "^0.23.2",
     "yaml": "^2.6.1"
   },
   "devDependencies": {
