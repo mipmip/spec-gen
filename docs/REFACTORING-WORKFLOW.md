@@ -4,6 +4,11 @@ Workflow for using spec-gen to refactor an existing codebase — particularly
 useful for vibe-coded projects with inconsistent naming, dead code, and poor
 normalization.
 
+> **MCP shortcut** — If you use Cline or Claude Code, `spec-gen mcp` exposes
+> all analysis steps as tools the AI can call directly, without CLI commands or
+> `jq` pipes. See the [MCP section in the README](../README.md#mcp-server) for
+> setup. The MCP equivalents are noted inline throughout this guide.
+
 ---
 
 ## 1. Initial Setup
@@ -48,6 +53,8 @@ Refactoring Candidates  (7/266 functions):
 | `multi_requirement` | Implements too many spec requirements — SRP violation | > 2 requirements |
 | `in_cycle` | Part of a cyclic call dependency | SCC size > 1 |
 | `unreachable` | Not reachable from any entry point and not in any spec | depth = -1 |
+
+**MCP equivalent:** `get_refactor_report({ directory: "/path/to/project" })` — returns the same prioritized list directly to your AI agent, no CLI or `jq` needed.
 
 **Notes on interpretation:**
 - `high_fan_out` on an entry point (CLI command, route handler) is expected
@@ -222,11 +229,14 @@ The full report structure:
 
 **Using the report with an AI assistant:**
 
+*Via CLI:*
 ```bash
 # Extract top refactoring candidates with their requirements
 cat .spec-gen/analysis/refactor-priorities.json | \
   jq '[.priorities[] | {function, file, issues, requirements, priorityScore}] | .[0:10]'
 ```
+
+*Via MCP (Cline / Claude Code):* call `get_refactor_report({ directory: "..." })` — the AI receives the full report directly and can act on it without a copy-paste step.
 
 Paste the output to an AI with instructions like:
 ```
@@ -306,7 +316,29 @@ The specs, mapping, and refactoring report are designed to be used as context
 for AI coding assistants (Claude, GPT-4, Cursor, etc.). The structured formats
 are directly readable by any AI.
 
-### 7a. Prioritize with the refactoring report first
+### 7a. MCP-native workflow (Cline / Claude Code)
+
+With `spec-gen mcp` running, your AI agent can drive the entire analysis loop
+without you running any CLI commands:
+
+```
+1. analyze_codebase({ directory: "/path/to/project" })
+   → project overview, call graph stats, top-10 refactor issues
+
+2. get_refactor_report({ directory: "..." })
+   → full prioritized list with SRP violations and cycles
+
+3. get_subgraph({ directory: "...", functionName: "check_authentication", direction: "both" })
+   → who calls it, what it calls, blast radius of a split
+
+4. get_signatures({ directory: "...", filePattern: "auth" })
+   → public API of the auth module before touching it
+```
+
+The AI can iterate — call `get_refactor_report` again after it has made changes
+to verify the priority score dropped — without leaving the editor.
+
+### 7b. Prioritize with the refactoring report first
 
 Before diving into domain-level refactoring, use `refactor-priorities.json` to
 identify which files and functions need the most attention:
@@ -373,7 +405,7 @@ Do not change signatures or behavior.
 [paste mismatch list]
 ```
 
-### 7d. Domain-scoped architecture enforcement
+### 7c. Domain-scoped architecture enforcement
 
 Use the architecture spec to prevent layer violations:
 
