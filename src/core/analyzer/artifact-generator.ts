@@ -24,7 +24,7 @@ import { toMermaidFormat } from './dependency-graph.js';
  *   Rust:          files with #[cfg(test)] (not detectable here — excluded by directory pattern)
  *   Java/Kotlin:   *Test.java, *Spec.kt
  */
-function isTestFile(filePath: string): boolean {
+export function isTestFile(filePath: string): boolean {
   const name = filePath.replace(/\\/g, '/');
   return (
     /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/.test(name) ||   // JS/TS: foo.test.ts
@@ -837,9 +837,11 @@ export class AnalysisArtifactGenerator {
       estimatedTokens: 2000,
     };
 
-    // Phase 2: Deep analysis (top files by importance)
+    // Phase 2: Deep analysis (top files by importance, excluding test files)
     const phase2Files: LLMContextPhase['files'] = [];
-    const topFiles = repoMap.highValueFiles.slice(0, this.options.maxDeepAnalysisFiles);
+    const topFiles = repoMap.highValueFiles
+      .filter(f => !isTestFile(f.path))
+      .slice(0, this.options.maxDeepAnalysisFiles);
 
     for (const file of topFiles) {
       try {
@@ -861,12 +863,13 @@ export class AnalysisArtifactGenerator {
       totalTokens: phase2Files.reduce((sum, f) => sum + f.tokens, 0),
     };
 
-    // Phase 3: Validation (random leaf nodes not in phase 2)
+    // Phase 3: Validation (random leaf nodes not in phase 2, excluding test files)
     const phase2Paths = new Set(phase2Files.map(f => f.path));
     const leafFiles = depGraph.rankings.leafNodes
       .map(id => depGraph.nodes.find(n => n.id === id)?.file)
       .filter((f): f is ScoredFile => f !== undefined)
-      .filter(f => !phase2Paths.has(f.path));
+      .filter(f => !phase2Paths.has(f.path))
+      .filter(f => !isTestFile(f.path));
 
     // Shuffle and take random samples
     const shuffled = leafFiles.sort(() => Math.random() - 0.5);
@@ -905,15 +908,20 @@ export class AnalysisArtifactGenerator {
     for (const file of repoMap.allFiles) {
       try {
         const content = await readFile(file.absolutePath, 'utf-8');
-        // Signatures (all languages)
-        const map = extractSignatures(file.path, content);
-        if (map.entries.length > 0) {
-          signatures.push(map);
+        const isTest = isTestFile(file.path);
+
+        // Signatures: exclude test files — they pollute the context shown to Stage 1
+        // and cause the LLM to suggest test files as schema/service/api candidates.
+        if (!isTest) {
+          const map = extractSignatures(file.path, content);
+          if (map.entries.length > 0) {
+            signatures.push(map);
+          }
         }
+
         // Call graph (Python + TypeScript/JavaScript only, exclude test files)
         const lang = detectLanguage(file.path);
-        if (lang === 'Python' || lang === 'TypeScript' || lang === 'JavaScript') {
-          if (isTestFile(file.path)) continue;
+        if (!isTest && (lang === 'Python' || lang === 'TypeScript' || lang === 'JavaScript')) {
           callGraphFiles.push({ path: file.path, content, language: lang });
         }
       } catch {

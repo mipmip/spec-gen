@@ -12,6 +12,7 @@ import type { LLMService } from '../services/llm-service.js';
 import type { RepoStructure, LLMContext } from '../analyzer/artifact-generator.js';
 import type { DependencyGraphResult } from '../analyzer/dependency-graph.js';
 import { formatSignatureMaps, STAGE1_MAX_CHARS } from '../analyzer/signature-extractor.js';
+import { isTestFile } from '../analyzer/artifact-generator.js';
 
 // ============================================================================
 // TYPES
@@ -1054,7 +1055,14 @@ ${architecture.keyDecisions.map((d, i) => `${i + 1}. ${d}`).join('\n')}`;
     llmPaths: string[],
     fallback: Array<{ path: string; content: string }>
   ): Promise<Array<{ path: string; content: string }>> {
-    if (llmPaths.length === 0) return fallback;
+    // Guard: never pass test files to the LLM stages regardless of what Stage 1 suggested
+    const safePaths = llmPaths.filter(p => !isTestFile(p));
+    if (safePaths.length === 0 && llmPaths.length > 0) {
+      // Stage 1 only suggested test files — use fallback instead
+      return fallback.filter(f => !isTestFile(f.path));
+    }
+    if (safePaths.length === 0) return fallback.filter(f => !isTestFile(f.path));
+    llmPaths = safePaths;
 
     const allFiles = context.phase2_deep.files;
     const resolved: Array<{ path: string; content: string }> = [];
