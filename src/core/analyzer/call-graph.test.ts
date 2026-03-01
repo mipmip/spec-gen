@@ -518,3 +518,109 @@ describe('CallGraphBuilder — stats and derived metrics', () => {
     expect(nodeNames(result)).toEqual(['ok']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Layer violations
+// ---------------------------------------------------------------------------
+
+describe('CallGraphBuilder — layer violations', () => {
+  const layers = {
+    presentation: ['src/routes/', 'src/controllers/'],
+    domain:       ['src/services/'],
+    data:         ['src/repositories/'],
+  };
+
+  it('detects a lower-layer call to an upper-layer function', async () => {
+    const builder = new CallGraphBuilder();
+    // save() in data layer calls buildView() which only exists in presentation layer
+    const result = await builder.build(
+      [
+        {
+          path: 'src/repositories/userRepo.ts',
+          language: 'TypeScript',
+          content: `function save() { buildView(); }`,
+        },
+        {
+          path: 'src/routes/userRoutes.ts',
+          language: 'TypeScript',
+          content: `function buildView() {}`,
+        },
+      ],
+      layers
+    );
+
+    // data layer calling presentation layer — violation
+    expect(result.layerViolations.length).toBeGreaterThanOrEqual(1);
+    const v = result.layerViolations[0];
+    expect(v.callerLayer).toBe('data');
+    expect(v.calleeLayer).toBe('presentation');
+    expect(v.reason).toContain('save');
+    expect(v.reason).toContain('buildView');
+  });
+
+  it('does NOT flag a call from upper to lower layer (correct direction)', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build(
+      [
+        {
+          path: 'src/controllers/orderCtrl.ts',
+          language: 'TypeScript',
+          content: `function handleOrder() { processOrder(); }`,
+        },
+        {
+          path: 'src/services/orderService.ts',
+          language: 'TypeScript',
+          content: `function processOrder() {}`,
+        },
+      ],
+      layers
+    );
+
+    expect(result.layerViolations).toHaveLength(0);
+  });
+
+  it('does NOT flag calls within the same layer', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build(
+      [
+        {
+          path: 'src/services/orderService.ts',
+          language: 'TypeScript',
+          content: `function createOrder() { validateOrder(); } function validateOrder() {}`,
+        },
+      ],
+      layers
+    );
+
+    expect(result.layerViolations).toHaveLength(0);
+  });
+
+  it('ignores calls between files that belong to no layer', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build(
+      [
+        {
+          path: 'utils/helpers.ts',
+          language: 'TypeScript',
+          content: `function helper() { other(); } function other() {}`,
+        },
+      ],
+      layers
+    );
+
+    expect(result.layerViolations).toHaveLength(0);
+  });
+
+  it('returns empty violations when no layers are provided', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build([
+      {
+        path: 'src/repositories/repo.ts',
+        language: 'TypeScript',
+        content: `function save() { render(); } function render() {}`,
+      },
+    ]);
+
+    expect(result.layerViolations).toHaveLength(0);
+  });
+});
