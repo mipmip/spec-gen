@@ -1,4 +1,4 @@
-# Refactor Codebase
+# spec-gen: Refactor Codebase
 
 Identify the highest-priority refactoring targets using static analysis, assess
 the blast radius of each change, and propose concrete code edits — iterating

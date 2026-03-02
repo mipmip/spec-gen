@@ -1,4 +1,4 @@
-# Analyze Codebase
+# spec-gen: Analyze Codebase
 
 Run a full static analysis of a project using spec-gen and summarise the results:
 architecture, call graph, and top refactoring issues — no LLM required.
