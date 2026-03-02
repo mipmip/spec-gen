@@ -200,8 +200,9 @@ Use `provider: "openai-compat"` with a base URL and API key:
 
 **Environment variables:**
 ```bash
-export OPENAI_COMPAT_BASE_URL=http://localhost:11434/v1   # Ollama
-export OPENAI_COMPAT_API_KEY=ollama                       # any value for local servers
+export OPENAI_COMPAT_BASE_URL=http://localhost:11434/v1   # Ollama, LM Studio, local servers
+export OPENAI_COMPAT_API_KEY=ollama                       # any non-empty value for local servers
+                                                          # use your real API key for cloud providers (Mistral, Groq…)
 ```
 
 **Config file** (per-project):
@@ -211,6 +212,22 @@ export OPENAI_COMPAT_API_KEY=ollama                       # any value for local 
     "provider": "openai-compat",
     "model": "llama3.2",
     "openaiCompatBaseUrl": "http://localhost:11434/v1",
+    "domains": "auto"
+  }
+}
+```
+
+**Self-signed certificates** (internal servers, VPN endpoints):
+```bash
+spec-gen generate --insecure
+```
+Or in `config.json`:
+```json
+{
+  "generation": {
+    "provider": "openai-compat",
+    "openaiCompatBaseUrl": "https://internal-llm.corp.net/v1",
+    "skipSslVerify": true,
     "domains": "auto"
   }
 }
@@ -345,6 +362,22 @@ spec-gen verify [options]
 ```
 
 **Cline** — add the same block under `mcpServers` in Cline's MCP settings JSON.
+
+### Cline Slash Commands
+
+`examples/cline-workflows/` contains two executable workflow files that drive the full analysis and refactoring loop as Cline slash commands. Copy them to your project's `.clinerules/workflows/` to activate them:
+
+```bash
+mkdir -p .clinerules/workflows
+cp /path/to/spec-gen/examples/cline-workflows/*.md .clinerules/workflows/
+```
+
+| Command | What it does |
+|---------|-------------|
+| `/spec-gen-analyze-codebase` | Runs `analyze_codebase`, summarises the results (project type, file count, top 3 refactor issues, detected domains), shows the call graph highlights, and suggests next steps. |
+| `/spec-gen-refactor-codebase` | Full refactoring loop: static analysis → prioritized report → impact assessment → Mermaid subgraph → low-risk entry points → proposed changes → verification. Optional Step 10 covers dead-code detection and naming alignment (requires `spec-gen generate`). |
+
+Both commands ask which directory to analyse, call the MCP tools directly, and guide you through the results without leaving the editor.
 
 ### Tools
 

@@ -473,7 +473,7 @@ async function handleAnalyzeCodebase(
  * high fan-out (god function), SRP violations, and cyclic dependencies.
  * Requires a prior successful `analyze_codebase` call.
  */
-async function handleGetRefactorReport(directory: string): Promise<unknown> {
+export async function handleGetRefactorReport(directory: string): Promise<unknown> {
   const absDir = await validateDirectory(directory);
   const ctx = await readCachedContext(absDir);
 
@@ -494,7 +494,7 @@ async function handleGetRefactorReport(directory: string): Promise<unknown> {
  * and architectural layer violations. Supports TypeScript, JavaScript, Python,
  * Go, Rust, Ruby, and Java. Requires a prior `analyze_codebase` call.
  */
-async function handleGetCallGraph(directory: string): Promise<unknown> {
+export async function handleGetCallGraph(directory: string): Promise<unknown> {
   const absDir = await validateDirectory(directory);
   const ctx = await readCachedContext(absDir);
 
@@ -534,7 +534,7 @@ async function handleGetCallGraph(directory: string): Promise<unknown> {
  * Multiple chunks are joined with a `---` separator.
  * Requires a prior `analyze_codebase` call.
  */
-async function handleGetSignatures(directory: string, filePattern?: string): Promise<string> {
+export async function handleGetSignatures(directory: string, filePattern?: string): Promise<string> {
   const absDir = await validateDirectory(directory);
   const ctx = await readCachedContext(absDir);
 
@@ -564,7 +564,7 @@ async function handleGetSignatures(directory: string, filePattern?: string): Pro
  * functions not covered by any requirement. Requires `spec-gen generate`
  * to have been run at least once.
  */
-async function handleGetMapping(
+export async function handleGetMapping(
   directory: string,
   domain?: string,
   orphansOnly?: boolean
@@ -745,7 +745,7 @@ function nodeToSummary(n: FunctionNode | undefined) {
  * hops, computes a risk score [0–100], and recommends a refactoring strategy.
  * Requires a prior `analyze_codebase` call.
  */
-async function handleAnalyzeImpact(
+export async function handleAnalyzeImpact(
   directory: string,
   symbol: string,
   depth = 2
@@ -837,7 +837,7 @@ async function handleAnalyzeImpact(
  * Sorted by ascending composite risk (fanIn + fanOut), then name.
  * Requires a prior `analyze_codebase` call.
  */
-async function handleGetLowRiskRefactorCandidates(
+export async function handleGetLowRiskRefactorCandidates(
   directory: string,
   limit = 5,
   filePattern?: string
@@ -901,7 +901,7 @@ async function handleGetLowRiskRefactorCandidates(
  *
  * Requires a prior `analyze_codebase` call.
  */
-async function handleGetLeafFunctions(
+export async function handleGetLeafFunctions(
   directory: string,
   limit = 20,
   filePattern?: string,
@@ -965,7 +965,7 @@ async function handleGetLeafFunctions(
  *
  * Requires a prior `analyze_codebase` call.
  */
-async function handleGetCriticalHubs(
+export async function handleGetCriticalHubs(
   directory: string,
   limit = 10,
   minFanIn = 3
@@ -1066,7 +1066,7 @@ async function handleGetCriticalHubs(
  * flowchart diagram with seed nodes highlighted in orange.
  * Requires a prior `analyze_codebase` call.
  */
-async function handleGetSubgraph(
+export async function handleGetSubgraph(
   directory: string,
   functionName: string,
   direction: 'downstream' | 'upstream' | 'both' = 'downstream',
