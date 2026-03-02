@@ -117,9 +117,16 @@ describe('runAnalysis integration — excludePatterns', () => {
 
     const paths = repoMap.allFiles.map(f => f.path);
 
+    // Presence / absence
     expect(paths.some(p => p.includes('main.py'))).toBe(true);
     expect(paths.some(p => p.includes('swagger'))).toBe(false);
     expect(paths.some(p => p.includes('redoc'))).toBe(false);
+
+    // Counts: exactly 2 files (main.py + models.py), no swagger
+    expect(repoMap.allFiles).toHaveLength(2);
+    expect(repoMap.summary.analyzedFiles).toBe(2);
+    // totalFiles >= analyzedFiles (may include skipped entries)
+    expect(repoMap.summary.totalFiles).toBeGreaterThanOrEqual(repoMap.summary.analyzedFiles);
   });
 
   it('caller-supplied exclude patterns also filter files', async () => {
@@ -136,6 +143,10 @@ describe('runAnalysis integration — excludePatterns', () => {
 
     expect(paths.some(p => p.includes('main.py'))).toBe(true);
     expect(paths.some(p => p.includes('legacy'))).toBe(false);
+
+    // Only main.py survives
+    expect(repoMap.allFiles).toHaveLength(1);
+    expect(repoMap.summary.analyzedFiles).toBe(1);
   });
 
   it('merges config and caller patterns — both sets of files excluded', async () => {
@@ -154,6 +165,10 @@ describe('runAnalysis integration — excludePatterns', () => {
     expect(paths.some(p => p.includes('main.py'))).toBe(true);
     expect(paths.some(p => p.includes('swagger'))).toBe(false);
     expect(paths.some(p => p.includes('legacy'))).toBe(false);
+
+    // Only main.py; swagger excluded by config, legacy by CLI
+    expect(repoMap.allFiles).toHaveLength(1);
+    expect(repoMap.summary.analyzedFiles).toBe(1);
   });
 
   it('includePatterns override gitignore exclusions', async () => {
