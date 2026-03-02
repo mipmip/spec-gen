@@ -22,7 +22,7 @@
 
             src = ./.;
 
-            npmDepsHash = "";  # Will be filled after first build attempt
+            npmDepsHash = "sha256-5l/gdzyivfA5w5/0GA5vte3NY7AMfoFsqMvWgkzfM1A=";
 
             # Build TypeScript
             buildPhase = ''
