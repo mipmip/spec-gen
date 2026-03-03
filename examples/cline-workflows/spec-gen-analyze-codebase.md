@@ -27,7 +27,7 @@ Call analyze_codebase on the chosen directory.
 Present a concise summary:
 - Project type and detected frameworks
 - File count, function count, internal call count
-- Top 3 refactoring issues (function name, file, issue type, priority score)
+- Top 5 refactoring issues (function name, file, issue type, priority score)
 - Detected domains
 
 ## Step 4: Show the call graph
