@@ -257,6 +257,20 @@ Respond with a JSON object containing:
 
 For schemaFiles/serviceFiles/apiFiles: use the exact file paths from the provided analysis. Return [] if none apply.
 
+Example output:
+{
+  "projectCategory": "api-service",
+  "primaryLanguage": "TypeScript",
+  "frameworks": ["Express", "Prisma"],
+  "architecturePattern": "layered",
+  "domainSummary": "REST API managing e-commerce orders and inventory.",
+  "suggestedDomains": ["order", "product", "auth"],
+  "confidence": 0.85,
+  "schemaFiles": ["src/models/order.ts", "src/types/product.ts"],
+  "serviceFiles": ["src/services/order-service.ts", "src/core/inventory.ts"],
+  "apiFiles": ["src/routes/orders.ts", "src/cli/commands/create.ts"]
+}
+
 Respond ONLY with valid JSON.`,
 
   stage2_entities: (projectCategory: string, frameworks: string[]) => `You are analyzing the core data models of a ${projectCategory} built with ${frameworks.join(', ')}.
@@ -272,6 +286,20 @@ For each entity you identify, extract in OpenSpec format:
 Focus on BUSINESS entities, not framework internals.
 Be precise - only include what you can verify from the code.
 
+Example output:
+[{
+  "name": "Order",
+  "description": "Represents a customer purchase transaction.",
+  "properties": [
+    {"name": "id", "type": "string", "description": "Unique identifier", "required": true},
+    {"name": "status", "type": "OrderStatus", "description": "Current lifecycle state", "required": true}
+  ],
+  "relationships": [{"targetEntity": "User", "type": "belongs-to", "description": "Order belongs to a customer"}],
+  "validations": ["Total must be positive", "Status transitions: pending → confirmed → shipped"],
+  "scenarios": [{"name": "Place order", "given": "User with items in cart", "when": "submitOrder() is called", "then": "Order created with status 'pending' and inventory reserved"}],
+  "location": ""
+}]
+
 Respond with a JSON array of entities. Respond ONLY with valid JSON.`,
 
   stage3_services: (projectCategory: string, entities: string[], suggestedDomains: string[]) => `You are analyzing the logic and processing layer of a ${projectCategory}.
@@ -282,7 +310,7 @@ Available domains: ${suggestedDomains.join(', ')}
 For each service/module, identify:
 - name: Service name
 - purpose: What capability or responsibility it encapsulates
-- operations: Array of {name, description, inputs, outputs, scenarios, functionName} - key operations/methods that become Requirements with Scenarios. Focus on the 3 most important operations per service, with 1 scenario each.
+- operations: Array of {name, description, inputs, outputs, scenarios, functionName} - key operations/methods that become Requirements with Scenarios. Cover all meaningful operations that represent distinct business behaviors.
   - operations[].functionName: The exact function or method name as written in the source code that implements this operation (e.g. "runStage2", "buildSpecMap"). Leave empty string if uncertain.
 - dependencies: Array of other services/repositories it uses
 - sideEffects: Array of external interactions (file I/O, network calls, database, queues, etc.)
@@ -290,6 +318,25 @@ For each service/module, identify:
 
 Focus on WHAT the service does, not HOW it's implemented.
 Express operations as requirements (SHALL/MUST/SHOULD) with testable scenarios.
+
+Example output:
+[{
+  "name": "OrderService",
+  "purpose": "Manages order lifecycle: placement, validation, and fulfillment.",
+  "operations": [
+    {
+      "name": "placeOrder",
+      "description": "Validates cart contents and creates a new order record.",
+      "inputs": ["userId: string", "items: CartItem[]"],
+      "outputs": ["orderId: string"],
+      "functionName": "placeOrder",
+      "scenarios": [{"name": "Valid order", "given": "In-stock items in cart", "when": "placeOrder is called", "then": "Order persisted and inventory reserved"}]
+    }
+  ],
+  "dependencies": ["InventoryService", "OrderRepository"],
+  "sideEffects": ["Writes to orders table", "Sends confirmation email via queue"],
+  "domain": "order"
+}]
 
 Respond with a JSON array of services. Respond ONLY with valid JSON.`,
 
@@ -304,6 +351,18 @@ For each endpoint/interface, structure as:
 - responseSchema: Expected output as JSON object
 - scenarios: Array of {name, given, when, then, and?} - example request/response flows
 - relatedEntity: Which domain entity it operates on
+
+Example output:
+[{
+  "method": "POST",
+  "path": "/api/orders",
+  "purpose": "Create a new order from the current cart.",
+  "authentication": "Bearer JWT",
+  "requestSchema": {"userId": "string", "items": "CartItem[]"},
+  "responseSchema": {"orderId": "string", "status": "pending"},
+  "scenarios": [{"name": "Create order", "given": "Authenticated user with valid cart", "when": "POST /api/orders is called", "then": "201 Created with orderId in response body"}],
+  "relatedEntity": "Order"
+}]
 
 Respond with a JSON array of endpoints. Respond ONLY with valid JSON.`,
 
@@ -325,6 +384,20 @@ Include:
 Express each key architectural aspect clearly.
 Base all conclusions on the code evidence provided.
 Where uncertain, say so explicitly.
+
+Example output:
+{
+  "systemPurpose": "A REST API for e-commerce order management. It allows customers to browse products, place orders, and track fulfillment.",
+  "architectureStyle": "Layered architecture: HTTP routes → service layer → repository pattern over PostgreSQL.",
+  "layerMap": [
+    {"name": "API", "purpose": "HTTP routing and input validation", "components": ["routes/orders.ts", "routes/products.ts"]},
+    {"name": "Service", "purpose": "Business logic and orchestration", "components": ["services/order-service.ts"]}
+  ],
+  "dataFlow": "HTTP request → route handler → service → repository → PostgreSQL; async email notifications via Redis queue",
+  "integrations": ["PostgreSQL", "Redis", "SendGrid"],
+  "securityModel": "JWT Bearer tokens issued at login; route middleware enforces authentication on all /api/* routes",
+  "keyDecisions": ["Use Prisma ORM for type-safe database access", "Redis queue for async email notifications to avoid request latency"]
+}
 
 Respond with a JSON object. Respond ONLY with valid JSON.`,
 
@@ -639,7 +712,7 @@ ${fileListingSection}`;
         systemPrompt: PROMPTS.stage1_survey,
         userPrompt,
         temperature: 0.3,
-        maxTokens: 1000,
+        maxTokens: 3000,
       });
 
       const stageResult: StageResult<ProjectSurveyResult> = {
@@ -680,11 +753,11 @@ ${fileListingSection}`;
       ...best,
       data: {
         ...best.data!,
-        frameworks:      best.data!.frameworks      ?? [],
-        suggestedDomains: best.data!.suggestedDomains ?? [],
-        schemaFiles:  [...new Set(successful.flatMap(r => r.data!.schemaFiles  ?? []))],
-        serviceFiles: [...new Set(successful.flatMap(r => r.data!.serviceFiles ?? []))],
-        apiFiles:     [...new Set(successful.flatMap(r => r.data!.apiFiles     ?? []))],
+        frameworks:       [...new Set(successful.flatMap(r => r.data!.frameworks       ?? []))],
+        suggestedDomains: [...new Set(successful.flatMap(r => r.data!.suggestedDomains ?? []))],
+        schemaFiles:      [...new Set(successful.flatMap(r => r.data!.schemaFiles      ?? []))],
+        serviceFiles:     [...new Set(successful.flatMap(r => r.data!.serviceFiles     ?? []))],
+        apiFiles:         [...new Set(successful.flatMap(r => r.data!.apiFiles         ?? []))],
       },
       tokens:   results.reduce((s, r) => s + r.tokens, 0),
       duration: results.reduce((s, r) => s + r.duration, 0),
@@ -740,22 +813,27 @@ ${fileListingSection}`;
 
     for (const file of schemaFiles) {
       const chunks = this.chunkContent(file.content, 8000);
+      const isLargeFile = chunks.length > 1;
+      if (isLargeFile) {
+        logger.warning(`Stage 2: ${file.path} too large (${chunks.length} parts) — entity spec may be incomplete`);
+      }
+      const entitiesFromFile: ExtractedEntity[] = [];
       for (let i = 0; i < chunks.length; i++) {
-        const chunkNote = chunks.length > 1 ? ` (part ${i + 1}/${chunks.length})` : '';
+        const chunkNote = isLargeFile ? ` (part ${i + 1}/${chunks.length})` : '';
         const userPrompt = `Analyze this schema/model file and extract entities:\n\n=== ${file.path}${chunkNote} ===\n${chunks[i]}`;
         try {
           const result = await this.llm.completeJSON<ExtractedEntity[]>({
             systemPrompt,
             userPrompt,
             temperature: 0.3,
-            maxTokens: 2000,
+            maxTokens: 4000,
           });
           if (Array.isArray(result)) {
             for (const entity of result) {
               if (!seenNames.has(entity.name)) {
                 seenNames.add(entity.name);
                 entity.location = file.path; // always use the actual file, not the LLM's guess
-                allEntities.push(entity);
+                entitiesFromFile.push(entity);
               }
             }
           }
@@ -763,6 +841,12 @@ ${fileListingSection}`;
           logger.warning(`Stage 2: failed to analyze ${file.path}${chunkNote}: ${(error as Error).message}`);
         }
       }
+      if (isLargeFile) {
+        for (const entity of entitiesFromFile) {
+          entity.description = `[PARTIAL SPEC — file too large to fully analyze (${chunks.length} parts)] ${entity.description}`;
+        }
+      }
+      allEntities.push(...entitiesFromFile);
     }
 
     const stageResult: StageResult<ExtractedEntity[]> = {
@@ -796,21 +880,26 @@ ${fileListingSection}`;
 
     for (const file of serviceFiles) {
       const chunks = this.chunkContent(file.content, 8000);
+      const isLargeFile = chunks.length > 1;
+      if (isLargeFile) {
+        logger.warning(`Stage 3: ${file.path} too large (${chunks.length} parts) — service spec may be incomplete`);
+      }
+      const servicesFromFile: ExtractedService[] = [];
       for (let i = 0; i < chunks.length; i++) {
-        const chunkNote = chunks.length > 1 ? ` (part ${i + 1}/${chunks.length})` : '';
+        const chunkNote = isLargeFile ? ` (part ${i + 1}/${chunks.length})` : '';
         const userPrompt = `Analyze this file and extract services/modules:\n\n=== ${file.path}${chunkNote} ===\n${chunks[i]}`;
         try {
           const result = await this.llm.completeJSON<ExtractedService[]>({
             systemPrompt,
             userPrompt,
             temperature: 0.3,
-            maxTokens: 2000,
+            maxTokens: 4000,
           });
           if (Array.isArray(result)) {
             for (const service of result) {
               if (!seenNames.has(service.name)) {
                 seenNames.add(service.name);
-                allServices.push(service);
+                servicesFromFile.push(service);
               }
             }
           }
@@ -818,6 +907,12 @@ ${fileListingSection}`;
           logger.warning(`Stage 3: failed to analyze ${file.path}${chunkNote}: ${(error as Error).message}`);
         }
       }
+      if (isLargeFile) {
+        for (const service of servicesFromFile) {
+          service.purpose = `[PARTIAL SPEC — file too large to fully analyze (${chunks.length} parts)] ${service.purpose}`;
+        }
+      }
+      allServices.push(...servicesFromFile);
     }
 
     const stageResult: StageResult<ExtractedService[]> = {
@@ -847,22 +942,27 @@ ${fileListingSection}`;
 
     for (const file of apiFiles) {
       const chunks = this.chunkContent(file.content, 8000);
+      const isLargeFile = chunks.length > 1;
+      if (isLargeFile) {
+        logger.warning(`Stage 4: ${file.path} too large (${chunks.length} parts) — endpoint spec may be incomplete`);
+      }
+      const endpointsFromFile: ExtractedEndpoint[] = [];
       for (let i = 0; i < chunks.length; i++) {
-        const chunkNote = chunks.length > 1 ? ` (part ${i + 1}/${chunks.length})` : '';
+        const chunkNote = isLargeFile ? ` (part ${i + 1}/${chunks.length})` : '';
         const userPrompt = `Analyze this API/route file and extract endpoints:\n\n=== ${file.path}${chunkNote} ===\n${chunks[i]}`;
         try {
           const result = await this.llm.completeJSON<ExtractedEndpoint[]>({
             systemPrompt: PROMPTS.stage4_api,
             userPrompt,
             temperature: 0.3,
-            maxTokens: 2000,
+            maxTokens: 4000,
           });
           if (Array.isArray(result)) {
             for (const endpoint of result) {
               const key = `${endpoint.method}:${endpoint.path}`;
               if (!seenPaths.has(key)) {
                 seenPaths.add(key);
-                allEndpoints.push(endpoint);
+                endpointsFromFile.push(endpoint);
               }
             }
           }
@@ -870,6 +970,12 @@ ${fileListingSection}`;
           logger.warning(`Stage 4: failed to analyze ${file.path}${chunkNote}: ${(error as Error).message}`);
         }
       }
+      if (isLargeFile) {
+        for (const endpoint of endpointsFromFile) {
+          endpoint.purpose = `[PARTIAL SPEC — file too large to fully analyze (${chunks.length} parts)] ${endpoint.purpose}`;
+        }
+      }
+      allEndpoints.push(...endpointsFromFile);
     }
 
     const stageResult: StageResult<ExtractedEndpoint[]> = {
@@ -930,7 +1036,7 @@ ${callGraph.layerViolations.slice(0, 5).map(v => `- ${v.reason}`).join('\n')}` :
         systemPrompt: PROMPTS.stage5_architecture(survey),
         userPrompt,
         temperature: 0.3,
-        maxTokens: 2000,
+        maxTokens: 3000,
       });
 
       const stageResult: StageResult<ArchitectureSynthesis> = {
@@ -974,7 +1080,7 @@ ${architecture.keyDecisions.map((d, i) => `${i + 1}. ${d}`).join('\n')}`;
         systemPrompt: PROMPTS.stage6_adr(architecture),
         userPrompt,
         temperature: 0.3,
-        maxTokens: 3000,
+        maxTokens: 5000,
       });
 
       const stageResult: StageResult<EnrichedADR[]> = {
