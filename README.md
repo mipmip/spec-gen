@@ -518,7 +518,7 @@ Type one of the following commands in a conversation:
 
 ### Cline Slash Commands
 
-`examples/cline-workflows/` contains three executable workflow files. Copy them to your project's `.clinerules/workflows/` to activate them as slash commands:
+`examples/cline-workflows/` contains four executable workflow files. Copy them to your project's `.clinerules/workflows/` to activate them as slash commands:
 
 ```bash
 mkdir -p .clinerules/workflows
@@ -532,7 +532,7 @@ cp /path/to/spec-gen/examples/cline-workflows/*.md .clinerules/workflows/
 | `/spec-gen-plan-refactor` | Runs static analysis, picks the highest-priority target with coverage gate, assesses impact and call graph, then writes a detailed plan to `.spec-gen/refactor-plan.md`. No code changes. |
 | `/spec-gen-execute-refactor` | Reads `.spec-gen/refactor-plan.md`, establishes a green baseline, and applies each planned change one at a time — with diff verification and test run after every step. Optional final step covers dead-code detection and naming alignment (requires `spec-gen generate`). |
 
-All three commands ask which directory to use, call the MCP tools directly, and guide you through the results without leaving the editor. They work in Cline, Roo Code, Kilocode, and any editor that supports the `.clinerules/workflows/` convention.
+All four commands ask which directory to use, call the MCP tools directly, and guide you through the results without leaving the editor. They work in Cline, Roo Code, Kilocode, and any editor that supports the `.clinerules/workflows/` convention.
 
 ### Tools
 
