@@ -7,8 +7,9 @@ normalization.
 > **MCP shortcut** — If you use Cline or Claude Code, `spec-gen mcp` exposes
 > all analysis steps as tools the AI can call directly, without CLI commands or
 > `jq` pipes. Copy the files from `examples/cline-workflows/` into your project's
-> `.clinerules/workflows/` and Cline will expose `/spec-gen-analyze-codebase` and `/spec-gen-refactor-codebase`
-> slash commands that drive the full loop.
+> `.clinerules/workflows/` and Cline will expose `/spec-gen-analyze-codebase`,
+> `/spec-gen-plan-refactor`, and `/spec-gen-execute-refactor` slash commands
+> that drive the full loop.
 > The MCP equivalents are noted inline throughout this guide.
 
 ---

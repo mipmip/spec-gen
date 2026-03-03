@@ -496,7 +496,8 @@ Type one of the following commands in a conversation:
 |---------|:---:|-------------|
 | `/spec-gen-analyze-codebase` | No | Architecture overview, call graph highlights, top refactor issues |
 | `/spec-gen-check-spec-drift` | No | Detect code changes not reflected in specs; per-kind remediation guidance |
-| `/spec-gen-refactor-codebase` | No | Full guided refactoring loop with impact analysis, coverage gate, and verification |
+| `/spec-gen-plan-refactor` | No | Static analysis → impact assessment → written plan saved to `.spec-gen/refactor-plan.md` (no code changes) |
+| `/spec-gen-execute-refactor` | No | Read the plan and apply changes incrementally, with tests and diff verification after each step |
 
 `analyze_codebase`, `check_spec_drift`, and all refactoring tools run on **pure static analysis** — no LLM quota consumed. Only `spec-gen generate` (the one-time spec generation step) requires an API key.
 
@@ -513,7 +514,8 @@ cp /path/to/spec-gen/examples/cline-workflows/*.md .clinerules/workflows/
 |---------|-------------|
 | `/spec-gen-analyze-codebase` | Runs `analyze_codebase`, summarises the results (project type, file count, top 3 refactor issues, detected domains), shows the call graph highlights, and suggests next steps. |
 | `/spec-gen-check-spec-drift` | Runs `check_spec_drift`, presents issues by severity (gap / stale / uncovered / orphaned-spec), shows per-kind remediation commands, and optionally drills into affected file signatures. |
-| `/spec-gen-refactor-codebase` | Full refactoring loop: static analysis → prioritized report with coverage gate → impact assessment → Mermaid subgraph → low-risk entry points → proposed changes → verification. Optional final step covers dead-code detection and naming alignment (requires `spec-gen generate`). |
+| `/spec-gen-plan-refactor` | Runs static analysis, picks the highest-priority target with coverage gate, assesses impact and call graph, then writes a detailed plan to `.spec-gen/refactor-plan.md`. No code changes. |
+| `/spec-gen-execute-refactor` | Reads `.spec-gen/refactor-plan.md`, establishes a green baseline, and applies each planned change one at a time — with diff verification and test run after every step. Optional final step covers dead-code detection and naming alignment (requires `spec-gen generate`). |
 
 All three commands ask which directory to use, call the MCP tools directly, and guide you through the results without leaving the editor. They work in Cline, Roo Code, Kilocode, and any editor that supports the `.clinerules/workflows/` convention.
 

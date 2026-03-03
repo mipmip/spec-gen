@@ -98,5 +98,5 @@ Present the following options and let the user choose:
    existing spec is mostly correct
 3. **Install the pre-commit hook** — run `spec-gen drift --install-hook` so drift is
    caught automatically before every commit
-4. **Run `/spec-gen-refactor-codebase`** — if the drift reveals structural issues in
-   the changed files
+4. **Run `/spec-gen-plan-refactor` then `/spec-gen-execute-refactor`** — if the drift
+   reveals structural issues in the changed files
