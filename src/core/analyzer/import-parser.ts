@@ -477,30 +477,52 @@ function parseJSExports(content: string): ExportInfo[] {
 // PYTHON PARSER
 // ============================================================================
 
+const PYTHON_BUILTINS = new Set([
+  // stdlib modules (Python 3)
+  'abc', 'argparse', 'ast', 'asyncio', 'base64', 'builtins', 'cgi', 'cmath',
+  'cmd', 'code', 'codecs', 'collections', 'concurrent', 'configparser',
+  'contextlib', 'copy', 'csv', 'dataclasses', 'datetime', 'decimal',
+  'difflib', 'dis', 'email', 'enum', 'errno', 'fileinput', 'fnmatch',
+  'fractions', 'ftplib', 'functools', 'gc', 'getpass', 'gettext', 'glob',
+  'gzip', 'hashlib', 'heapq', 'hmac', 'html', 'http', 'imaplib', 'importlib',
+  'inspect', 'io', 'ipaddress', 'itertools', 'json', 'keyword', 'linecache',
+  'locale', 'logging', 'lzma', 'math', 'mimetypes', 'multiprocessing',
+  'numbers', 'operator', 'os', 'pathlib', 'pickle', 'platform', 'pprint',
+  'queue', 'random', 're', 'shlex', 'shutil', 'signal', 'smtplib', 'socket',
+  'socketserver', 'sqlite3', 'ssl', 'stat', 'statistics', 'string',
+  'struct', 'subprocess', 'sys', 'tarfile', 'tempfile', 'textwrap',
+  'threading', 'time', 'timeit', 'tkinter', 'token', 'tokenize', 'traceback',
+  'types', 'typing', 'unicodedata', 'unittest', 'urllib', 'uuid', 'warnings',
+  'weakref', 'xml', 'xmlrpc', 'zipfile', 'zipimport', 'zlib',
+  '__future__',
+]);
+
 /**
  * Parse imports from Python content
  */
 function parsePythonImports(content: string): ImportInfo[] {
   const imports: ImportInfo[] = [];
 
-  // Remove comments
-  const cleanContent = content.replace(/#.*$/gm, '');
+  // Remove comments and collapse multi-line parenthesized imports onto one line
+  // e.g. "from x import (\n  A,\n  B\n)" → "from x import A, B"
+  const cleanContent = content
+    .replace(/#.*$/gm, '')
+    .replace(/\(\s*([\s\S]*?)\s*\)/g, (_, inner) => inner.replace(/\s*\n\s*/g, ', '));
 
   let match: RegExpExecArray | null;
 
-  // import X or import X, Y or import X.Y
-  // Use [^\n\r]+ to match until end of line only
+  // import X or import X, Y or import X.Y.Z
   const importRegex = /^import[ \t]+([^\n\r]+)$/gm;
   while ((match = importRegex.exec(cleanContent)) !== null) {
     const modules = match[1].split(',').map(m => m.trim()).filter(Boolean);
     for (const mod of modules) {
-      const source = mod.split(' as ')[0].trim();
+      const source = mod.split(/\s+as\s+/)[0].trim();
       imports.push({
         source,
         isRelative: source.startsWith('.'),
         isPackage: !source.startsWith('.'),
-        isBuiltin: false, // Would need Python stdlib list
-        importedNames: [mod.includes(' as ') ? mod.split(' as ')[1].trim() : source.split('.').pop()!],
+        isBuiltin: PYTHON_BUILTINS.has(source.split('.')[0]),
+        importedNames: [mod.includes(' as ') ? mod.split(/\s+as\s+/)[1].trim() : source.split('.').pop()!],
         hasDefault: false,
         hasNamespace: true,
         isTypeOnly: false,
@@ -510,19 +532,18 @@ function parsePythonImports(content: string): ImportInfo[] {
     }
   }
 
-  // from X import Y or from X import Y, Z
+  // from X import Y or from X import Y, Z (including multi-line after collapsing)
   const fromImportRegex = /^from\s+([\w.]+)\s+import\s+(.+)$/gm;
   while ((match = fromImportRegex.exec(cleanContent)) !== null) {
     const source = match[1];
-    const importsPart = match[2].trim();
+    const importsPart = match[2].trim().replace(/[()]/g, '');
 
-    // Handle "import *"
     if (importsPart === '*') {
       imports.push({
         source,
         isRelative: source.startsWith('.'),
         isPackage: !source.startsWith('.'),
-        isBuiltin: false,
+        isBuiltin: PYTHON_BUILTINS.has(source.split('.')[0]),
         importedNames: ['*'],
         hasDefault: false,
         hasNamespace: true,
@@ -533,14 +554,14 @@ function parsePythonImports(content: string): ImportInfo[] {
     } else {
       const names = importsPart.split(',').map(n => {
         const trimmed = n.trim();
-        return trimmed.includes(' as ') ? trimmed.split(' as ')[1].trim() : trimmed;
+        return trimmed.includes(' as ') ? trimmed.split(/\s+as\s+/)[1].trim() : trimmed;
       }).filter(Boolean);
 
       imports.push({
         source,
         isRelative: source.startsWith('.'),
         isPackage: !source.startsWith('.'),
-        isBuiltin: false,
+        isBuiltin: PYTHON_BUILTINS.has(source.split('.')[0]),
         importedNames: names,
         hasDefault: false,
         hasNamespace: false,
@@ -647,9 +668,32 @@ export async function resolveImport(
   }
 
   const fromDir = dirname(fromFile);
-  const extensions = options.extensions ?? ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
+  const fromExt = extname(fromFile).toLowerCase();
+  const isPython = fromExt === '.py' || fromExt === '.pyw';
 
-  const basePath = resolve(fromDir, importSource);
+  // Default extensions depend on the source file type
+  const extensions = options.extensions ?? (
+    isPython
+      ? ['.py', '.pyw']
+      : ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']
+  );
+
+  // Python relative imports use dot-prefix notation:
+  //   from .utils import foo   → source = ".utils"   → resolve as "./utils"
+  //   from ..models import X   → source = "..models"  → resolve as "../models"
+  //   from ...pkg import Y     → source = "...pkg"    → resolve as "../../pkg"
+  // N dots = (N-1) levels up from fromDir. Also handles dotted paths: .db.models → ./db/models
+  let normalizedSource = importSource;
+  if (isPython && importSource.startsWith('.')) {
+    let dots = 0;
+    while (dots < importSource.length && importSource[dots] === '.') dots++;
+    const rest = importSource.slice(dots).replace(/\./g, '/');
+    // dots=1 → './', dots=2 → '../', dots=3 → '../../', etc.
+    const prefix = dots === 1 ? './' : '../'.repeat(dots - 1);
+    normalizedSource = rest ? prefix + rest : prefix.replace(/\/$/, '') || '.';
+  }
+
+  const basePath = resolve(fromDir, normalizedSource);
 
   // Strip any existing extension from the import source.
   // This handles the TypeScript NodeNext convention where imports are written
@@ -664,11 +708,13 @@ export async function resolveImport(
   // 1. Exact path as-is (the import may already point to the real file)
   // 2. Strip the extension, try every known extension (handles .js -> .ts)
   // 3. Directory index files (handles `./components` -> `./components/index.ts`)
+  // 4. Python packages: module/__init__.py
   const candidates: string[] = [
     basePath,
     ...extensions.map(ext => baseWithoutExt + ext),
     ...extensions.map(ext => join(basePath, `index${ext}`)),
     ...extensions.map(ext => join(baseWithoutExt, `index${ext}`)),
+    ...(isPython ? extensions.map(ext => join(basePath, `__init__${ext}`)) : []),
   ];
 
   // Deduplicate while preserving order

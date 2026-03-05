@@ -727,4 +727,125 @@ describe('DependencyGraphBuilder', () => {
       expect(duration).toBeLessThan(5000);
     });
   });
+
+  // ==========================================================================
+  // Python Graph Construction
+  // ==========================================================================
+
+  describe('Python Graph Construction', () => {
+    it('should create edges for Python relative imports', async () => {
+      const fileA = await createFile(tempDir, 'app.py', `
+from .utils import helper
+x = helper()
+`);
+      const fileB = await createFile(tempDir, 'utils.py', `
+def helper():
+    return 42
+`);
+
+      const files: ScoredFile[] = [
+        createScoredFile({ absolutePath: fileA, name: 'app.py', extension: '.py' }),
+        createScoredFile({ absolutePath: fileB, name: 'utils.py', extension: '.py' }),
+      ];
+
+      const result = await buildDependencyGraph(files, { rootDir: tempDir });
+
+      expect(result.edges).toHaveLength(1);
+      expect(result.edges[0].source).toBe(fileA);
+      expect(result.edges[0].target).toBe(fileB);
+    });
+
+    it('should create edges for Python double-dot relative imports', async () => {
+      await mkdir(join(tempDir, 'pkg'), { recursive: true });
+      const fileA = await createFile(tempDir, 'pkg/service.py', `
+from ..models import User
+`);
+      const fileB = await createFile(tempDir, 'models.py', `
+class User:
+    pass
+`);
+
+      const files: ScoredFile[] = [
+        createScoredFile({ absolutePath: fileA, name: 'service.py', extension: '.py', directory: 'pkg' }),
+        createScoredFile({ absolutePath: fileB, name: 'models.py', extension: '.py' }),
+      ];
+
+      const result = await buildDependencyGraph(files, { rootDir: tempDir });
+
+      expect(result.edges).toHaveLength(1);
+      expect(result.edges[0].source).toBe(fileA);
+      expect(result.edges[0].target).toBe(fileB);
+    });
+
+    it('should resolve Python package __init__.py as edge target', async () => {
+      await mkdir(join(tempDir, 'mypackage'), { recursive: true });
+      const fileA = await createFile(tempDir, 'app.py', `
+from .mypackage import something
+`);
+      const fileB = await createFile(tempDir, 'mypackage/__init__.py', `
+something = 1
+`);
+
+      const files: ScoredFile[] = [
+        createScoredFile({ absolutePath: fileA, name: 'app.py', extension: '.py' }),
+        createScoredFile({ absolutePath: fileB, name: '__init__.py', extension: '.py', directory: 'mypackage' }),
+      ];
+
+      const result = await buildDependencyGraph(files, { rootDir: tempDir });
+
+      expect(result.edges).toHaveLength(1);
+      expect(result.edges[0].target).toBe(fileB);
+    });
+
+    it('should not create edges for Python stdlib imports', async () => {
+      const fileA = await createFile(tempDir, 'app.py', `
+import os
+import sys
+from typing import Optional
+x = os.getcwd()
+`);
+
+      const files: ScoredFile[] = [
+        createScoredFile({ absolutePath: fileA, name: 'app.py', extension: '.py' }),
+      ];
+
+      const result = await buildDependencyGraph(files, { rootDir: tempDir });
+
+      expect(result.edges).toHaveLength(0);
+    });
+
+    it('should handle mixed Python project with multiple relative imports', async () => {
+      const fileMain = await createFile(tempDir, 'main.py', `
+from .models import User
+from .services import UserService
+from .utils import helper
+`);
+      const fileModels = await createFile(tempDir, 'models.py', `
+class User:
+    pass
+`);
+      const fileServices = await createFile(tempDir, 'services.py', `
+from .models import User
+class UserService:
+    pass
+`);
+      const fileUtils = await createFile(tempDir, 'utils.py', `
+def helper():
+    pass
+`);
+
+      const files: ScoredFile[] = [
+        createScoredFile({ absolutePath: fileMain, name: 'main.py', extension: '.py' }),
+        createScoredFile({ absolutePath: fileModels, name: 'models.py', extension: '.py' }),
+        createScoredFile({ absolutePath: fileServices, name: 'services.py', extension: '.py' }),
+        createScoredFile({ absolutePath: fileUtils, name: 'utils.py', extension: '.py' }),
+      ];
+
+      const result = await buildDependencyGraph(files, { rootDir: tempDir });
+
+      // main→models, main→services, main→utils, services→models
+      expect(result.edges).toHaveLength(4);
+      expect(result.nodes.find(n => n.file.name === 'models.py')?.metrics.inDegree).toBe(2);
+    });
+  });
 });

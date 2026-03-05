@@ -114,7 +114,7 @@ export class DependencyGraphBuilder {
     this.parser = new ImportExportParser();
     this.options = {
       rootDir: options.rootDir,
-      extensions: options.extensions ?? ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      extensions: options.extensions ?? [],  // empty = auto-detect per file in resolveImport
       minClusterSize: options.minClusterSize ?? 2,
       dampingFactor: options.dampingFactor ?? 0.85,
       maxIterations: options.maxIterations ?? 100,
@@ -220,7 +220,7 @@ export class DependencyGraphBuilder {
         // Resolve the import to an absolute path
         const resolvedPath = await resolveImport(imp.source, file.absolutePath, {
           baseDir: this.options.rootDir,
-          extensions: this.options.extensions,
+          extensions: this.options.extensions.length > 0 ? this.options.extensions : undefined,
         });
 
         // Skip if not resolved or not in our file set

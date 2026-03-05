@@ -1140,6 +1140,51 @@ export function test() {}
 
       expect(result).toBe(jsPath);
     });
+
+    // ── Python relative import resolution ──────────────────────────────────
+
+    it('should resolve Python single-dot relative import', async () => {
+      const utilsPath = await createFile(tempDir, 'utils.py', 'def helper(): pass');
+
+      const result = await resolveImport('.utils', join(tempDir, 'app.py'), {
+        baseDir: tempDir,
+      });
+
+      expect(result).toBe(utilsPath);
+    });
+
+    it('should resolve Python double-dot relative import', async () => {
+      await mkdir(join(tempDir, 'pkg'), { recursive: true });
+      const modelsPath = await createFile(tempDir, 'models.py', 'class User: pass');
+
+      const result = await resolveImport('..models', join(tempDir, 'pkg', 'service.py'), {
+        baseDir: tempDir,
+      });
+
+      expect(result).toBe(modelsPath);
+    });
+
+    it('should resolve Python package __init__.py', async () => {
+      await mkdir(join(tempDir, 'mypackage'), { recursive: true });
+      const initPath = await createFile(tempDir, 'mypackage/__init__.py', '');
+
+      const result = await resolveImport('.mypackage', join(tempDir, 'app.py'), {
+        baseDir: tempDir,
+      });
+
+      expect(result).toBe(initPath);
+    });
+
+    it('should resolve Python dotted submodule path', async () => {
+      await mkdir(join(tempDir, 'db'), { recursive: true });
+      const modelsPath = await createFile(tempDir, 'db/models.py', 'class User: pass');
+
+      const result = await resolveImport('.db.models', join(tempDir, 'app.py'), {
+        baseDir: tempDir,
+      });
+
+      expect(result).toBe(modelsPath);
+    });
   });
 
   // ==========================================================================
