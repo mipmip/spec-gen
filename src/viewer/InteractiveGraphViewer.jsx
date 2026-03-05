@@ -578,7 +578,7 @@ function FToggle({ active, onChange, label, badge, activeColor="#7c6af7" }) {
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
-export default function App() {
+export default function App({ graphUrl }) {
   const [graph, setGraph] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [affectedIds, setAffectedIds] = useState([]);
@@ -590,6 +590,7 @@ export default function App() {
   const [filters, setFilters] = useState({ hideOrphans:false, minScore:0, topN:999, cluster:"" });
   const [loaded, setLoaded] = useState(false);
   const fileRef = useRef();
+  const hasAutoLoadedRef = useRef(false);
 
   useEffect(() => { setTimeout(() => setLoaded(true), 80); }, []);
 
@@ -602,6 +603,24 @@ export default function App() {
       setExpandedClusters(new Set());
     } catch(e) { alert("JSON invalide : "+e.message); }
   }, []);
+
+  // Auto-load graph from API when a URL is provided (used by `spec-gen view`)
+  useEffect(() => {
+    if (!graphUrl || hasAutoLoadedRef.current) return;
+    hasAutoLoadedRef.current = true;
+    (async () => {
+      try {
+        const res = await fetch(graphUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        loadGraph(text);
+      } catch (e) {
+        // Fall back to manual upload UI; errors are shown in console.
+        // eslint-disable-next-line no-console
+        console.error("Failed to load graph from", graphUrl, e);
+      }
+    })();
+  }, [graphUrl, loadGraph]);
 
   const handleFile = e => {
     const f = e.target.files[0]; if (!f) return;
