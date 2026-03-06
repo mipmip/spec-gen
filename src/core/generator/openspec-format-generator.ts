@@ -444,6 +444,35 @@ export class OpenSpecFormatGenerator {
           this.addScenario(lines, scenario);
         }
       }
+
+      // Sub-components for orchestrator services (god functions)
+      if (service.subSpecs && service.subSpecs.length > 0) {
+        lines.push('');
+        lines.push('## Sub-components');
+        lines.push('');
+        lines.push(`> \`${service.name}\` is an orchestrator. Each sub-component below implements one logical block.`);
+        lines.push('');
+
+        for (const sub of service.subSpecs) {
+          lines.push(`### Sub-component: ${this.formatRequirementName(sub.name)}`);
+          lines.push('');
+          lines.push(`> Implements: \`${sub.callee}\``);
+          lines.push('');
+          lines.push(sub.purpose);
+          lines.push('');
+
+          for (const op of (sub.operations ?? [])) {
+            lines.push(`#### Requirement: ${this.formatRequirementName(op.name)}`);
+            lines.push('');
+            const opDesc = (op.description ?? '').replace(/^\s*(shall|must|should|may)\s+/i, '');
+            lines.push(`The system SHALL ${opDesc.toLowerCase()}`);
+            lines.push('');
+            for (const scenario of (op.scenarios ?? [])) {
+              this.addScenario(lines, scenario);
+            }
+          }
+        }
+      }
     }
 
     // Fallback: if no requirements were generated, add a placeholder

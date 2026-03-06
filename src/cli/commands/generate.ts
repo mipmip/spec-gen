@@ -35,6 +35,7 @@ import { ADRGenerator } from '../../core/generator/adr-generator.js';
 import type { RepoStructure, LLMContext } from '../../core/analyzer/artifact-generator.js';
 import type { DependencyGraphResult } from '../../core/analyzer/dependency-graph.js';
 import { MappingGenerator } from '../../core/generator/mapping-generator.js';
+import { createProgress } from '../../utils/progress.js';
 
 // ============================================================================
 // TYPES
@@ -557,21 +558,23 @@ Each spec.md follows OpenSpec conventions:
       }
 
       // Run generation pipeline
+      const progress = createProgress();
+      progress.start('Generating specifications...');
+
       const pipeline = new SpecGenerationPipeline(llm, {
         outputDir: join(rootPath, '.spec-gen', 'generation'),
         rootPath,
         saveIntermediate: true,
         generateADRs: opts.adr || opts.adrOnly,
+        progress,
       });
-
-      logger.analysis('Running LLM generation pipeline...');
-      logger.blank();
 
       let pipelineResult: PipelineResult;
       try {
         pipelineResult = await pipeline.run(repoStructure, llmContext, depGraph);
+        progress.succeed('Pipeline completed');
       } catch (error) {
-        logger.error(`Pipeline failed: ${(error as Error).message}`);
+        progress.fail(`Pipeline failed: ${(error as Error).message}`);
 
         // Save logs on failure
         try {

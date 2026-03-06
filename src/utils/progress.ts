@@ -5,6 +5,18 @@
 
 import ora, { Ora } from 'ora';
 
+/**
+ * Render a tqdm-style progress bar: [=====>    ] 45% (9/20)
+ */
+export function renderBar(current: number, total: number, width = 30): string {
+  const pct = total > 0 ? Math.min(current / total, 1) : 0;
+  const filled = Math.floor(pct * width);
+  const arrow = filled < width ? '>' : '';
+  const dashes = width - filled - arrow.length;
+  const bar = '='.repeat(filled) + arrow + ' '.repeat(Math.max(0, dashes));
+  return `[${bar}] ${Math.round(pct * 100)}% (${current}/${total})`;
+}
+
 export interface ProgressOptions {
   /** Whether to show the spinner (false for non-TTY) */
   enabled?: boolean;
@@ -160,14 +172,16 @@ export class ProgressIndicator {
       clustering: 'Detecting domain clusters',
     };
 
-    let message = `${phases[progress.phase]}...`;
-
-    if (progress.current) {
-      message += ` (${progress.current})`;
-    }
+    let message = `${phases[progress.phase]}`;
 
     if (progress.processed !== undefined && progress.total !== undefined) {
-      message += ` [${progress.processed}/${progress.total}]`;
+      message += ` ${renderBar(progress.processed, progress.total)}`;
+    } else {
+      message += '...';
+    }
+
+    if (progress.current) {
+      message += ` ${progress.current}`;
     }
 
     this.update(message);
@@ -177,7 +191,8 @@ export class ProgressIndicator {
    * Update generation progress
    */
   updateGeneration(progress: GenerationProgress): void {
-    let message = `Querying LLM... (stage ${progress.stage}/${progress.totalStages}: ${progress.stageName})`;
+    const bar = renderBar(progress.stage, progress.totalStages);
+    let message = `Generating ${bar} ${progress.stageName}`;
 
     if (progress.tokensUsed !== undefined) {
       message += ` [${progress.tokensUsed} tokens]`;
@@ -190,10 +205,11 @@ export class ProgressIndicator {
    * Update file writing progress
    */
   updateWriting(progress: WritingProgress): void {
-    let message = `Writing specs... (${progress.current}/${progress.total} files)`;
+    const bar = renderBar(progress.current, progress.total);
+    let message = `Writing specs ${bar}`;
 
     if (progress.currentFile) {
-      message += ` [${progress.currentFile}]`;
+      message += ` ${progress.currentFile}`;
     }
 
     this.update(message);

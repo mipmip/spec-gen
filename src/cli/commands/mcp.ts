@@ -38,6 +38,8 @@ import { join, resolve } from 'node:path';
 import { runAnalysis } from './analyze.js';
 import { analyzeForRefactoring } from '../../core/analyzer/refactor-analyzer.js';
 import { formatSignatureMaps } from '../../core/analyzer/signature-extractor.js';
+import { getSkeletonContent, detectLanguage, isSkeletonWorthIncluding } from '../../core/analyzer/code-shaper.js';
+import { getFileGodFunctions, extractSubgraph } from '../../core/analyzer/subgraph-extractor.js';
 import type { LLMContext } from '../../core/analyzer/artifact-generator.js';
 import type { SerializedCallGraph, FunctionNode } from '../../core/analyzer/call-graph.js';
 import type { MappingArtifact } from '../../core/generator/mapping-generator.js';
@@ -368,6 +370,55 @@ const TOOL_DEFINITIONS = [
         minFanIn: {
           type: 'number',
           description: 'Minimum fan-in threshold to be considered a hub (default: 3)',
+        },
+      },
+      required: ['directory'],
+    },
+  },
+  {
+    name: 'get_function_skeleton',
+    description:
+      'Return a noise-stripped skeleton of a source file: logs, inline comments, and ' +
+      'non-JSDoc block comments are removed while signatures, control flow (if/for/try), ' +
+      'return/throw statements, and call expressions are preserved. ' +
+      'Use this before refactoring a god function to get a compact structural view ' +
+      'without reading thousands of lines of raw source.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Absolute path to the project directory',
+        },
+        filePath: {
+          type: 'string',
+          description: 'Path to the file, relative to the project directory',
+        },
+      },
+      required: ['directory', 'filePath'],
+    },
+  },
+  {
+    name: 'get_god_functions',
+    description:
+      'Detect god functions (high fan-out, likely orchestrators) in the project or in a ' +
+      'specific file, and return their call-graph neighborhood. ' +
+      'Use this to identify which functions need to be refactored and understand what ' +
+      'logical blocks to extract. Run analyze_codebase first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Absolute path to the project directory',
+        },
+        filePath: {
+          type: 'string',
+          description: 'Optional: restrict search to this file (relative path)',
+        },
+        fanOutThreshold: {
+          type: 'number',
+          description: 'Minimum fan-out to be considered a god function (default: 8)',
         },
       },
       required: ['directory'],
@@ -1395,6 +1446,103 @@ export async function handleCheckSpecDrift(
 }
 
 // ============================================================================
+// GOD FUNCTION + SKELETON HANDLERS
+// ============================================================================
+
+/**
+ * Return a noise-stripped skeleton of a source file.
+ * Logs, inline comments, and non-JSDoc block comments are removed.
+ */
+export async function handleGetFunctionSkeleton(
+  directory: string,
+  filePath: string,
+): Promise<unknown> {
+  const absDir = await validateDirectory(directory);
+  const absFile = join(absDir, filePath);
+
+  let source: string;
+  try {
+    source = await readFile(absFile, 'utf-8');
+  } catch {
+    return { error: `File not found: ${filePath}` };
+  }
+
+  const language = detectLanguage(filePath);
+  const skeleton = getSkeletonContent(source, language);
+  const worthIncluding = isSkeletonWorthIncluding(source, skeleton);
+
+  return {
+    filePath,
+    language,
+    originalLines: source.split('\n').length,
+    skeletonLines: skeleton.split('\n').length,
+    reductionPct: Math.round((1 - skeleton.length / source.length) * 100),
+    worthIncluding,
+    skeleton,
+  };
+}
+
+/**
+ * Detect god functions (high fan-out) in the project or in a specific file,
+ * and return their call-graph neighborhood for refactoring guidance.
+ */
+export async function handleGetGodFunctions(
+  directory: string,
+  filePath?: string,
+  fanOutThreshold = 8,
+): Promise<unknown> {
+  const absDir = await validateDirectory(directory);
+  const ctx = await readCachedContext(absDir);
+
+  if (!ctx) return { error: 'No analysis found. Run analyze_codebase first.' };
+  if (!ctx.callGraph) return { error: 'Call graph not available. Re-run analyze_codebase.' };
+
+  const cg = ctx.callGraph as SerializedCallGraph;
+
+  // Find candidates: either in specific file or across whole project
+  let candidates: FunctionNode[];
+  if (filePath) {
+    candidates = getFileGodFunctions(cg, filePath, fanOutThreshold);
+  } else {
+    candidates = cg.nodes.filter(n => n.fanOut >= fanOutThreshold);
+  }
+
+  if (candidates.length === 0) {
+    return {
+      threshold: fanOutThreshold,
+      count: 0,
+      godFunctions: [],
+      message: `No god functions found with fanOut >= ${fanOutThreshold}`,
+    };
+  }
+
+  // For each candidate, extract its subgraph
+  const godFunctions = candidates
+    .sort((a, b) => b.fanOut - a.fanOut)
+    .map(fn => {
+      const sub = extractSubgraph(cg, fn);
+      const directCallees = [...new Set(
+        sub.edges.filter(([from]) => from === fn.name).map(([, to]) => to)
+      )];
+      return {
+        name: fn.name,
+        file: fn.filePath,
+        className: fn.className,
+        fanIn: fn.fanIn,
+        fanOut: fn.fanOut,
+        directCallees,
+        subgraphNodes: sub.nodes.length,
+      };
+    });
+
+  return {
+    threshold: fanOutThreshold,
+    count: godFunctions.length,
+    godFunctions,
+  };
+}
+
+// ============================================================================
 // MCP SERVER
 // ============================================================================
 
@@ -1452,6 +1600,13 @@ async function startMcpServer(): Promise<void> {
       } else if (name === 'get_duplicate_report') {
         const { directory } = args as { directory: string };
         result = await handleGetDuplicateReport(directory);
+      } else if (name === 'get_function_skeleton') {
+        const { directory, filePath } = args as { directory: string; filePath: string };
+        result = await handleGetFunctionSkeleton(directory, filePath);
+      } else if (name === 'get_god_functions') {
+        const { directory, filePath, fanOutThreshold = 8 } =
+          args as { directory: string; filePath?: string; fanOutThreshold?: number };
+        result = await handleGetGodFunctions(directory, filePath, fanOutThreshold);
       } else if (name === 'check_spec_drift') {
         const { directory, base = 'auto', files = [], domains = [], failOn = 'warning', maxFiles = 100 } =
           args as { directory: string; base?: string; files?: string[]; domains?: string[]; failOn?: 'error' | 'warning' | 'info'; maxFiles?: number };

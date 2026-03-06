@@ -8,8 +8,11 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import logger from '../../utils/logger.js';
+import type { ProgressIndicator } from '../../utils/progress.js';
 import type { LLMService } from '../services/llm-service.js';
 import type { RepoStructure, LLMContext } from '../analyzer/artifact-generator.js';
+import { buildGraphPromptSection, getFileGodFunctions, extractSubgraph } from '../analyzer/subgraph-extractor.js';
+import { getSkeletonContent, detectLanguage, isSkeletonWorthIncluding } from '../analyzer/code-shaper.js';
 import type { DependencyGraphResult } from '../analyzer/dependency-graph.js';
 import { formatSignatureMaps, STAGE1_MAX_CHARS } from '../analyzer/signature-extractor.js';
 import { isTestFile } from '../analyzer/artifact-generator.js';
@@ -122,6 +125,20 @@ export interface ServiceOperation {
 }
 
 /**
+ * Sub-specification for one logical block (direct callee) of an orchestrator service.
+ */
+export interface ServiceSubSpec {
+  /** Short identifier, e.g. "entityExtraction" */
+  name: string;
+  /** Exact function/method name in source code */
+  callee: string;
+  /** One-sentence description of what this block does */
+  purpose: string;
+  /** Operations expressed as requirements with scenarios */
+  operations: ServiceOperation[];
+}
+
+/**
  * Stage 3 output: Service
  */
 export interface ExtractedService {
@@ -131,6 +148,8 @@ export interface ExtractedService {
   dependencies: string[];
   sideEffects: string[];
   domain: string;
+  /** Set when this service is a detected orchestrator (god function) */
+  subSpecs?: ServiceSubSpec[];
 }
 
 /**
@@ -233,6 +252,8 @@ export interface PipelineOptions {
   saveIntermediate?: boolean;
   /** Generate Architecture Decision Records (triggers Stage 6) */
   generateADRs?: boolean;
+  /** Progress indicator for CLI output */
+  progress?: ProgressIndicator;
 }
 
 // ============================================================================
@@ -427,6 +448,37 @@ ${architecture.keyDecisions.map((d, i) => `${i + 1}. ${d}`).join('\n')}
 
 Base all conclusions on the code evidence provided. Where uncertain, say so explicitly.
 Respond with a JSON array of ADR objects. Respond ONLY with valid JSON.`,
+
+  stage3_subspec_system: `You are generating sub-specifications for the logical blocks of an orchestrator function.
+
+For each sub-block provided, generate a focused specification:
+- name: short camelCase identifier (e.g. "entityExtraction", "schemaValidation")
+- callee: exact function/method name as written in source code
+- purpose: one sentence describing what this block does
+- operations: array of {name, description, inputs, outputs, scenarios, functionName}
+  - Express operations as requirements using SHALL/MUST/SHOULD keywords
+  - Include at least one testable scenario per operation
+
+Focus on WHAT each block does, not HOW it is implemented.
+Respond ONLY with a valid JSON array of sub-specification objects.`,
+
+  stage3_subspec: (
+    orchestratorName: string,
+    orchestratorPurpose: string,
+    callees: Array<{ name: string; signature?: string; docstring?: string; subcallees: string[] }>
+  ) => `Orchestrator function: ${orchestratorName}
+Purpose: ${orchestratorPurpose}
+
+Sub-blocks to specify:
+${callees.map((c, i) =>
+  `${i + 1}. ${c.name}` +
+  (c.signature ? `\n   Signature: ${c.signature}` : '') +
+  (c.docstring ? `\n   Doc: ${c.docstring}` : '') +
+  (c.subcallees.length > 0 ? `\n   Calls: ${c.subcallees.join(', ')}` : '')
+).join('\n')}
+
+Generate one sub-specification per sub-block listed above.
+Respond ONLY with a valid JSON array of {name, callee, purpose, operations} objects.`,
 };
 
 // ============================================================================
@@ -438,11 +490,15 @@ Respond with a JSON array of ADR objects. Respond ONLY with valid JSON.`,
  */
 export class SpecGenerationPipeline {
   private llm: LLMService;
-  private options: Required<PipelineOptions>;
+  private options: Required<Omit<PipelineOptions, 'progress'>>;
+  private progress?: ProgressIndicator;
   private stageResults: Map<string, StageResult<unknown>> = new Map();
+  /** Set at the start of run() and used by stage methods for graph-based prompts */
+  private currentLLMContext?: LLMContext;
 
   constructor(llm: LLMService, options: PipelineOptions) {
     this.llm = llm;
+    this.progress = options.progress;
     this.options = {
       outputDir: options.outputDir,
       skipStages: options.skipStages ?? [],
@@ -462,6 +518,7 @@ export class SpecGenerationPipeline {
     llmContext: LLMContext,
     depGraph?: DependencyGraphResult
   ): Promise<PipelineResult> {
+    this.currentLLMContext = llmContext;
     const startTime = Date.now();
     let totalTokens = 0;
     const completedStages: string[] = [];
@@ -472,10 +529,22 @@ export class SpecGenerationPipeline {
       await mkdir(this.options.outputDir, { recursive: true });
     }
 
+    const totalStages = this.options.generateADRs ? 6 : 5;
+    let stageNum = 0;
+
+    const startStage = (name: string, label: string) => {
+      stageNum++;
+      if (this.progress) {
+        this.progress.updateGeneration({ stage: stageNum, totalStages, stageName: label });
+      } else {
+        logger.analysis(`Running Stage ${stageNum}: ${label}`);
+      }
+    };
+
     // Stage 1: Project Survey
     let survey: ProjectSurveyResult;
     if (this.shouldRunStage('survey')) {
-      logger.analysis('Running Stage 1: Project Survey');
+      startStage('survey', 'Project Survey');
       const result = await this.runStage1(repoStructure, llmContext);
       if (result.success && result.data) {
         // Normalize: LLM may omit array fields, which causes undefined.join/length crashes downstream
@@ -506,10 +575,12 @@ export class SpecGenerationPipeline {
     // Stage 2: Entity Extraction
     let entities: ExtractedEntity[] = [];
     if (this.shouldRunStage('entities')) {
-      logger.analysis('Running Stage 2: Entity Extraction');
       const schemaFiles = await this.resolveFiles(llmContext, survey.schemaFiles ?? [], this.getSchemaFiles(llmContext));
       if (schemaFiles.length > 0) {
-        const result = await this.runStage2(survey, schemaFiles);
+        startStage('entities', 'Entity Extraction');
+        const result = await this.runStage2(survey, schemaFiles, (i, total, file) => {
+          this.progress?.updateGeneration({ stage: stageNum, totalStages, stageName: `Entity Extraction ${i}/${total}: ${file}` });
+        });
         entities = result.data ?? [];
         totalTokens += result.tokens;
         completedStages.push('entities');
@@ -524,10 +595,12 @@ export class SpecGenerationPipeline {
     // Stage 3: Service Analysis
     let services: ExtractedService[] = [];
     if (this.shouldRunStage('services')) {
-      logger.analysis('Running Stage 3: Service Analysis');
       const serviceFiles = await this.resolveFiles(llmContext, survey.serviceFiles ?? [], this.getServiceFiles(llmContext));
       if (serviceFiles.length > 0) {
-        const result = await this.runStage3(survey, entities, serviceFiles);
+        startStage('services', 'Service Analysis');
+        const result = await this.runStage3(survey, entities, serviceFiles, (i, total, file) => {
+          this.progress?.updateGeneration({ stage: stageNum, totalStages, stageName: `Service Analysis ${i}/${total}: ${file}` });
+        });
         services = result.data ?? [];
         totalTokens += result.tokens;
         completedStages.push('services');
@@ -542,10 +615,12 @@ export class SpecGenerationPipeline {
     // Stage 4: API Extraction
     let endpoints: ExtractedEndpoint[] = [];
     if (this.shouldRunStage('api')) {
-      logger.analysis('Running Stage 4: API Extraction');
       const apiFiles = await this.resolveFiles(llmContext, survey.apiFiles ?? [], this.getApiFiles(llmContext));
       if (apiFiles.length > 0) {
-        const result = await this.runStage4(apiFiles);
+        startStage('api', 'API Extraction');
+        const result = await this.runStage4(apiFiles, (i, total, file) => {
+          this.progress?.updateGeneration({ stage: stageNum, totalStages, stageName: `API Extraction ${i}/${total}: ${file}` });
+        });
         endpoints = result.data ?? [];
         totalTokens += result.tokens;
         completedStages.push('api');
@@ -560,7 +635,7 @@ export class SpecGenerationPipeline {
     // Stage 5: Architecture Synthesis
     let architecture: ArchitectureSynthesis;
     if (this.shouldRunStage('architecture')) {
-      logger.analysis('Running Stage 5: Architecture Synthesis');
+      startStage('architecture', 'Architecture Synthesis');
       const result = await this.runStage5(survey, entities, services, endpoints, depGraph, llmContext.callGraph);
       if (result.success && result.data) {
         // Normalize: LLM may omit array fields, which causes undefined.length crashes downstream
@@ -586,7 +661,7 @@ export class SpecGenerationPipeline {
     let adrs: EnrichedADR[] = [];
     if (this.options.generateADRs && this.shouldRunStage('adr')) {
       if (architecture.keyDecisions.length > 0) {
-        logger.analysis('Running Stage 6: ADR Enrichment');
+        startStage('adr', 'ADR Enrichment');
         const result = await this.runStage6(architecture);
         adrs = result.data ?? [];
         totalTokens += result.tokens;
@@ -800,27 +875,148 @@ ${fileListingSection}`;
   }
 
   /**
+   * For a large file, try to build a graph-based prompt section.
+   * Returns null when no call graph data is available or the file has no god functions
+   * (caller should fall back to raw source chunking).
+   *
+   * When file content is provided, appends a stripped skeleton when it achieves
+   * a meaningful size reduction (≥ 20%), giving the LLM both topology and
+   * internal control-flow structure.
+   */
+  private graphPromptFor(filePath: string, content?: string): string | null {
+    const ctx = this.currentLLMContext;
+    if (!ctx?.callGraph) return null;
+
+    const graphSection = buildGraphPromptSection(ctx.callGraph, ctx.signatures, filePath);
+    if (!graphSection) return null;
+    if (!content) return graphSection;
+
+    const language = detectLanguage(filePath);
+    const skeleton = getSkeletonContent(content, language);
+
+    if (isSkeletonWorthIncluding(content, skeleton)) {
+      // Cap skeleton at 4000 chars to avoid overwhelming the prompt
+      const cap = 4000;
+      const skeletonExcerpt = skeleton.length > cap
+        ? skeleton.slice(0, cap) + '\n... [skeleton truncated]'
+        : skeleton;
+      return `${graphSection}\n\nFunction skeleton (logs/comments stripped):\n${skeletonExcerpt}`;
+    }
+
+    return graphSection;
+  }
+
+  /**
+   * Generate sub-specifications for the direct callees of god functions in a file.
+   * Makes a single batched LLM call covering all callees at once.
+   * Returns [] when no graph data or no god functions are found.
+   */
+  private async generateSubSpecs(
+    filePath: string,
+    parentName: string,
+    parentPurpose: string,
+  ): Promise<ServiceSubSpec[]> {
+    const callGraph = this.currentLLMContext?.callGraph;
+    if (!callGraph) return [];
+
+    const godFunctions = getFileGodFunctions(callGraph, filePath);
+    if (godFunctions.length === 0) return [];
+
+    // Collect unique direct callees across all god functions in this file
+    const seenCallees = new Set<string>();
+    const calleeInfos: Array<{
+      name: string;
+      signature?: string;
+      docstring?: string;
+      subcallees: string[];
+    }> = [];
+
+    for (const godFn of godFunctions) {
+      const sub = extractSubgraph(callGraph, godFn);
+      const directCallees = [...new Set(
+        sub.edges.filter(([from]) => from === godFn.name).map(([, to]) => to)
+      )];
+
+      for (const calleeName of directCallees) {
+        if (seenCallees.has(calleeName)) continue;
+        seenCallees.add(calleeName);
+
+        const sigEntry = this.currentLLMContext?.signatures
+          ?.flatMap(s => s.entries)
+          .find(e => e.name === calleeName);
+
+        const subcallees = [...new Set(
+          sub.edges.filter(([from]) => from === calleeName).map(([, to]) => to)
+        )];
+
+        calleeInfos.push({
+          name: calleeName,
+          signature: sigEntry?.signature,
+          docstring: sigEntry?.docstring,
+          subcallees,
+        });
+      }
+    }
+
+    if (calleeInfos.length === 0) return [];
+
+    try {
+      const result = await this.llm.completeJSON<ServiceSubSpec[]>({
+        systemPrompt: PROMPTS.stage3_subspec_system,
+        userPrompt: PROMPTS.stage3_subspec(parentName, parentPurpose, calleeInfos),
+        temperature: 0.3,
+        maxTokens: 4000,
+      });
+      if (Array.isArray(result)) {
+        // Ensure callee field is set — LLM sometimes names it differently
+        for (const sub of result) {
+          if (!sub.callee) {
+            const matched = calleeInfos.find(
+              c => c.name === sub.name ||
+              c.name.toLowerCase().includes((sub.name ?? '').toLowerCase())
+            );
+            sub.callee = matched?.name ?? sub.name;
+          }
+          sub.operations = sub.operations ?? [];
+        }
+        return result;
+      }
+    } catch (error) {
+      logger.warning(`Sub-specs: failed for ${parentName}: ${(error as Error).message}`);
+    }
+    return [];
+  }
+
+  /**
    * Stage 2: Entity Extraction — one LLM call per file (chunked if large)
    */
   private async runStage2(
     survey: ProjectSurveyResult,
-    schemaFiles: Array<{ path: string; content: string }>
+    schemaFiles: Array<{ path: string; content: string }>,
+    onFile?: (i: number, total: number, file: string) => void,
   ): Promise<StageResult<ExtractedEntity[]>> {
     const startTime = Date.now();
     const systemPrompt = PROMPTS.stage2_entities(survey.projectCategory, survey.frameworks);
     const allEntities: ExtractedEntity[] = [];
     const seenNames = new Set<string>();
 
-    for (const file of schemaFiles) {
+    for (const [idx, file] of schemaFiles.entries()) {
+      onFile?.(idx + 1, schemaFiles.length, file.path);
       const chunks = this.chunkContent(file.content, 8000);
       const isLargeFile = chunks.length > 1;
-      if (isLargeFile) {
+      const graphSection = isLargeFile ? this.graphPromptFor(file.path, file.content) : null;
+
+      if (isLargeFile && !graphSection) {
         logger.warning(`Stage 2: ${file.path} too large (${chunks.length} parts) — entity spec may be incomplete`);
       }
+
       const entitiesFromFile: ExtractedEntity[] = [];
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkNote = isLargeFile ? ` (part ${i + 1}/${chunks.length})` : '';
-        const userPrompt = `Analyze this schema/model file and extract entities:\n\n=== ${file.path}${chunkNote} ===\n${chunks[i]}`;
+
+      // Use graph-based prompt for large files when call graph is available
+      const fileChunks = graphSection ? [graphSection] : chunks;
+      for (let i = 0; i < fileChunks.length; i++) {
+        const chunkNote = !graphSection && isLargeFile ? ` (part ${i + 1}/${fileChunks.length})` : '';
+        const userPrompt = `Analyze this schema/model file and extract entities:\n\n=== ${file.path}${chunkNote} ===\n${fileChunks[i]}`;
         try {
           const result = await this.llm.completeJSON<ExtractedEntity[]>({
             systemPrompt,
@@ -841,7 +1037,7 @@ ${fileListingSection}`;
           logger.warning(`Stage 2: failed to analyze ${file.path}${chunkNote}: ${(error as Error).message}`);
         }
       }
-      if (isLargeFile) {
+      if (isLargeFile && !graphSection) {
         for (const entity of entitiesFromFile) {
           entity.description = `[PARTIAL SPEC — file too large to fully analyze (${chunks.length} parts)] ${entity.description}`;
         }
@@ -870,7 +1066,8 @@ ${fileListingSection}`;
   private async runStage3(
     survey: ProjectSurveyResult,
     entities: ExtractedEntity[],
-    serviceFiles: Array<{ path: string; content: string }>
+    serviceFiles: Array<{ path: string; content: string }>,
+    onFile?: (i: number, total: number, file: string) => void,
   ): Promise<StageResult<ExtractedService[]>> {
     const startTime = Date.now();
     const entityNames = entities.map(e => e.name);
@@ -878,16 +1075,21 @@ ${fileListingSection}`;
     const allServices: ExtractedService[] = [];
     const seenNames = new Set<string>();
 
-    for (const file of serviceFiles) {
+    for (const [idx, file] of serviceFiles.entries()) {
+      onFile?.(idx + 1, serviceFiles.length, file.path);
       const chunks = this.chunkContent(file.content, 8000);
       const isLargeFile = chunks.length > 1;
-      if (isLargeFile) {
+      const graphSection = isLargeFile ? this.graphPromptFor(file.path, file.content) : null;
+
+      if (isLargeFile && !graphSection) {
         logger.warning(`Stage 3: ${file.path} too large (${chunks.length} parts) — service spec may be incomplete`);
       }
+
       const servicesFromFile: ExtractedService[] = [];
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkNote = isLargeFile ? ` (part ${i + 1}/${chunks.length})` : '';
-        const userPrompt = `Analyze this file and extract services/modules:\n\n=== ${file.path}${chunkNote} ===\n${chunks[i]}`;
+      const fileChunks = graphSection ? [graphSection] : chunks;
+      for (let i = 0; i < fileChunks.length; i++) {
+        const chunkNote = !graphSection && isLargeFile ? ` (part ${i + 1}/${fileChunks.length})` : '';
+        const userPrompt = `Analyze this file and extract services/modules:\n\n=== ${file.path}${chunkNote} ===\n${fileChunks[i]}`;
         try {
           const result = await this.llm.completeJSON<ExtractedService[]>({
             systemPrompt,
@@ -907,11 +1109,22 @@ ${fileListingSection}`;
           logger.warning(`Stage 3: failed to analyze ${file.path}${chunkNote}: ${(error as Error).message}`);
         }
       }
-      if (isLargeFile) {
+      if (isLargeFile && !graphSection) {
         for (const service of servicesFromFile) {
           service.purpose = `[PARTIAL SPEC — file too large to fully analyze (${chunks.length} parts)] ${service.purpose}`;
         }
       }
+
+      // For god-function files analyzed via graph, generate hierarchical sub-specs
+      if (graphSection && servicesFromFile.length > 0) {
+        for (const service of servicesFromFile) {
+          const subSpecs = await this.generateSubSpecs(file.path, service.name, service.purpose);
+          if (subSpecs.length > 0) {
+            service.subSpecs = subSpecs;
+          }
+        }
+      }
+
       allServices.push(...servicesFromFile);
     }
 
@@ -934,22 +1147,28 @@ ${fileListingSection}`;
    * Stage 4: API Extraction — one LLM call per file (chunked if large)
    */
   private async runStage4(
-    apiFiles: Array<{ path: string; content: string }>
+    apiFiles: Array<{ path: string; content: string }>,
+    onFile?: (i: number, total: number, file: string) => void,
   ): Promise<StageResult<ExtractedEndpoint[]>> {
     const startTime = Date.now();
     const allEndpoints: ExtractedEndpoint[] = [];
     const seenPaths = new Set<string>();
 
-    for (const file of apiFiles) {
+    for (const [idx, file] of apiFiles.entries()) {
+      onFile?.(idx + 1, apiFiles.length, file.path);
       const chunks = this.chunkContent(file.content, 8000);
       const isLargeFile = chunks.length > 1;
-      if (isLargeFile) {
+      const graphSection = isLargeFile ? this.graphPromptFor(file.path, file.content) : null;
+
+      if (isLargeFile && !graphSection) {
         logger.warning(`Stage 4: ${file.path} too large (${chunks.length} parts) — endpoint spec may be incomplete`);
       }
+
       const endpointsFromFile: ExtractedEndpoint[] = [];
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkNote = isLargeFile ? ` (part ${i + 1}/${chunks.length})` : '';
-        const userPrompt = `Analyze this API/route file and extract endpoints:\n\n=== ${file.path}${chunkNote} ===\n${chunks[i]}`;
+      const fileChunks = graphSection ? [graphSection] : chunks;
+      for (let i = 0; i < fileChunks.length; i++) {
+        const chunkNote = !graphSection && isLargeFile ? ` (part ${i + 1}/${fileChunks.length})` : '';
+        const userPrompt = `Analyze this API/route file and extract endpoints:\n\n=== ${file.path}${chunkNote} ===\n${fileChunks[i]}`;
         try {
           const result = await this.llm.completeJSON<ExtractedEndpoint[]>({
             systemPrompt: PROMPTS.stage4_api,
@@ -970,7 +1189,7 @@ ${fileListingSection}`;
           logger.warning(`Stage 4: failed to analyze ${file.path}${chunkNote}: ${(error as Error).message}`);
         }
       }
-      if (isLargeFile) {
+      if (isLargeFile && !graphSection) {
         for (const endpoint of endpointsFromFile) {
           endpoint.purpose = `[PARTIAL SPEC — file too large to fully analyze (${chunks.length} parts)] ${endpoint.purpose}`;
         }

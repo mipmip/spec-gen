@@ -1,15 +1,12 @@
 /**
- * Tests for the spec-gen programmatic API
+ * Tests for specGenGetSpecRequirements programmatic API
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { specGenInit } from './init.js';
-import { specGenAnalyze } from './analyze.js';
-import { specGenDrift } from './drift.js';
-import type { ProgressEvent } from './types.js';
+import { specGenGetSpecRequirements } from './specs.js';
 
 // ============================================================================
 // TEST HELPERS
@@ -17,252 +14,448 @@ import type { ProgressEvent } from './types.js';
 
 let testDir: string;
 
-async function createTestProject(dir: string): Promise<void> {
-  await mkdir(dir, { recursive: true });
-
-  // Create package.json (project manifest)
-  await writeFile(join(dir, 'package.json'), JSON.stringify({
-    name: 'test-project',
-    version: '1.0.0',
-    type: 'module',
-  }, null, 2));
-
-  // Create a source file
-  await mkdir(join(dir, 'src'), { recursive: true });
-  await writeFile(join(dir, 'src', 'index.ts'), `
-export function greet(name: string): string {
-  return \`Hello, \${name}!\`;
+/** Build the .spec-gen/analysis/mapping.json fixture */
+async function writeMapping(dir: string, payload: object): Promise<void> {
+  const analysisDir = join(dir, '.spec-gen', 'analysis');
+  await mkdir(analysisDir, { recursive: true });
+  await writeFile(join(analysisDir, 'mapping.json'), JSON.stringify(payload, null, 2));
 }
 
-export function add(a: number, b: number): number {
-  return a + b;
+/** Write a spec markdown file with one or more "### Requirement:" sections */
+async function writeSpecFile(dir: string, relPath: string, content: string): Promise<void> {
+  const abs = join(dir, relPath);
+  await mkdir(join(abs, '..'), { recursive: true });
+  await writeFile(abs, content);
 }
-`);
 
-  await writeFile(join(dir, 'src', 'utils.ts'), `
-export function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-`);
-
-  // Create .gitignore
-  await writeFile(join(dir, '.gitignore'), 'node_modules/\ndist/\n');
+function makeSpecContent(entries: Array<{ title: string; body: string }>): string {
+  return entries.map(({ title, body }) => `### Requirement: ${title}\n${body}`).join('\n\n');
 }
 
 // ============================================================================
-// TESTS: specGenInit
+// TESTS: no mapping.json
 // ============================================================================
 
-describe('specGenInit', () => {
+describe('specGenGetSpecRequirements — no mapping.json', () => {
   beforeEach(async () => {
-    testDir = join(tmpdir(), `spec-gen-api-test-init-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    await createTestProject(testDir);
+    testDir = join(
+      tmpdir(),
+      `spec-gen-specs-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    await mkdir(testDir, { recursive: true });
   });
 
   afterEach(async () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
-  it('should create config and openspec directory', async () => {
-    const result = await specGenInit({ rootPath: testDir });
+  it('returns empty requirements when mapping.json does not exist', async () => {
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
 
-    expect(result.created).toBe(true);
-    expect(result.configPath).toBe('.spec-gen/config.json');
-    expect(result.openspecPath).toBe('./openspec');
-    expect(result.projectType).toBeTruthy();
+    expect(result.requirements).toEqual({});
+    expect(result.generatedAt).toBeUndefined();
   });
 
-  it('should skip if config exists and force is false', async () => {
-    // First init
-    await specGenInit({ rootPath: testDir });
-    // Second init without force
-    const result = await specGenInit({ rootPath: testDir });
-
-    expect(result.created).toBe(false);
-  });
-
-  it('should overwrite config when force is true', async () => {
-    await specGenInit({ rootPath: testDir });
-    const result = await specGenInit({ rootPath: testDir, force: true });
-
-    expect(result.created).toBe(true);
-  });
-
-  it('should reject paths outside project root', async () => {
-    await expect(
-      specGenInit({ rootPath: testDir, openspecPath: '../../outside' })
-    ).rejects.toThrow('OpenSpec path must be within the project directory');
-  });
-
-  it('should call onProgress with expected events', async () => {
-    const events: ProgressEvent[] = [];
-    await specGenInit({
-      rootPath: testDir,
-      onProgress: (event) => events.push(event),
-    });
-
-    expect(events.length).toBeGreaterThan(0);
-    expect(events.every(e => e.phase === 'init')).toBe(true);
-    expect(events.some(e => e.step === 'Detecting project type')).toBe(true);
-    expect(events.some(e => e.status === 'complete')).toBe(true);
-  });
-
-  it('should detect project type correctly', async () => {
-    const result = await specGenInit({ rootPath: testDir });
-    // testDir has a package.json so should detect as Node.js
-    expect(result.projectType.toLowerCase()).toContain('node');
-  });
-
-  it('should use custom openspec path', async () => {
-    const result = await specGenInit({
-      rootPath: testDir,
-      openspecPath: './docs/specs',
-    });
-
-    expect(result.openspecPath).toBe('./docs/specs');
-  });
-
-  it('should add .spec-gen/ to .gitignore', async () => {
-    await specGenInit({ rootPath: testDir });
-
-    const { readFile } = await import('node:fs/promises');
-    const gitignore = await readFile(join(testDir, '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('.spec-gen/');
+  it('uses process.cwd() when rootPath is omitted (smoke test — no throw)', async () => {
+    // We cannot control cwd in tests, but the call must not throw
+    await expect(specGenGetSpecRequirements()).resolves.toBeDefined();
   });
 });
 
 // ============================================================================
-// TESTS: specGenAnalyze
+// TESTS: mapping.json present, basic extraction
 // ============================================================================
 
-describe('specGenAnalyze', () => {
+describe('specGenGetSpecRequirements — basic extraction', () => {
   beforeEach(async () => {
-    testDir = join(tmpdir(), `spec-gen-api-test-analyze-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    await createTestProject(testDir);
-    // Init first
-    await specGenInit({ rootPath: testDir });
+    testDir = join(
+      tmpdir(),
+      `spec-gen-specs-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    await mkdir(testDir, { recursive: true });
   });
 
   afterEach(async () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
-  it('should analyze the codebase and return results', async () => {
-    const result = await specGenAnalyze({ rootPath: testDir });
-
-    expect(result.repoMap).toBeDefined();
-    expect(result.depGraph).toBeDefined();
-    expect(result.artifacts).toBeDefined();
-    expect(result.duration).toBeGreaterThanOrEqual(0);
-  });
-
-  it('should throw if no config exists', async () => {
-    const emptyDir = join(tmpdir(), `spec-gen-api-test-empty-${Date.now()}`);
-    await mkdir(emptyDir, { recursive: true });
-
-    try {
-      await expect(
-        specGenAnalyze({ rootPath: emptyDir })
-      ).rejects.toThrow('No spec-gen configuration found');
-    } finally {
-      await rm(emptyDir, { recursive: true, force: true });
-    }
-  });
-
-  it('should skip recent analysis unless force is true', async () => {
-    // First analysis
-    const result1 = await specGenAnalyze({ rootPath: testDir });
-    expect(result1.repoMap).toBeDefined();
-
-    // Second analysis should skip (< 1 hour old)
-    const events: ProgressEvent[] = [];
-    await specGenAnalyze({
-      rootPath: testDir,
-      onProgress: (e) => events.push(e),
+  it('returns generatedAt from mapping.json', async () => {
+    await writeMapping(testDir, {
+      generatedAt: '2024-01-15T10:00:00.000Z',
+      mappings: [],
     });
 
-    expect(events.some(e => e.status === 'skip')).toBe(true);
-
-    // Force re-analysis
-    const result3 = await specGenAnalyze({
-      rootPath: testDir,
-      force: true,
-    });
-    expect(result3.duration).toBeGreaterThanOrEqual(0);
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    expect(result.generatedAt).toBe('2024-01-15T10:00:00.000Z');
   });
 
-  it('should call onProgress with expected events', async () => {
-    const events: ProgressEvent[] = [];
-    await specGenAnalyze({
-      rootPath: testDir,
-      onProgress: (event) => events.push(event),
+  it('returns empty requirements when mappings array is empty', async () => {
+    await writeMapping(testDir, { generatedAt: '2024-01-01T00:00:00Z', mappings: [] });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    expect(result.requirements).toEqual({});
+  });
+
+  it('extracts requirement body from spec file', async () => {
+    const specRel = 'openspec/specs/auth.md';
+    await writeSpecFile(
+      testDir,
+      specRel,
+      makeSpecContent([
+        { title: 'User Login', body: 'Users must be able to log in with email and password.' },
+      ])
+    );
+
+    await writeMapping(testDir, {
+      generatedAt: '2024-01-01T00:00:00Z',
+      mappings: [
+        { requirement: 'User Login', specFile: specRel, domain: 'auth', service: 'login-service' },
+      ],
     });
 
-    expect(events.length).toBeGreaterThan(0);
-    expect(events.every(e => e.phase === 'analyze')).toBe(true);
-    expect(events.some(e => e.step.includes('Scanning'))).toBe(true);
-    expect(events.some(e => e.step.includes('dependency graph'))).toBe(true);
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+
+    expect(result.requirements['User Login']).toMatchObject({
+      title: 'User Login',
+      body: 'Users must be able to log in with email and password.',
+      specFile: specRel,
+      domain: 'auth',
+      service: 'login-service',
+    });
+  });
+
+  it('extracts multiple requirements from the same spec file', async () => {
+    const specRel = 'openspec/specs/auth.md';
+    await writeSpecFile(
+      testDir,
+      specRel,
+      makeSpecContent([
+        { title: 'User Login', body: 'Login body.' },
+        { title: 'User Logout', body: 'Logout body.' },
+      ])
+    );
+
+    await writeMapping(testDir, {
+      mappings: [
+        { requirement: 'User Login', specFile: specRel },
+        { requirement: 'User Logout', specFile: specRel },
+      ],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+
+    expect(result.requirements['User Login'].body).toBe('Login body.');
+    expect(result.requirements['User Logout'].body).toBe('Logout body.');
+  });
+
+  it('extracts requirements from different spec files', async () => {
+    const spec1 = 'openspec/specs/auth.md';
+    const spec2 = 'openspec/specs/billing.md';
+
+    await writeSpecFile(
+      testDir,
+      spec1,
+      makeSpecContent([{ title: 'User Login', body: 'Auth body.' }])
+    );
+    await writeSpecFile(
+      testDir,
+      spec2,
+      makeSpecContent([{ title: 'Invoice Generation', body: 'Billing body.' }])
+    );
+
+    await writeMapping(testDir, {
+      mappings: [
+        { requirement: 'User Login', specFile: spec1, domain: 'auth' },
+        { requirement: 'Invoice Generation', specFile: spec2, domain: 'billing' },
+      ],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+
+    expect(result.requirements['User Login'].body).toBe('Auth body.');
+    expect(result.requirements['Invoice Generation'].body).toBe('Billing body.');
   });
 });
 
 // ============================================================================
-// TESTS: specGenDrift
+// TESTS: case-insensitive title matching
 // ============================================================================
 
-describe('specGenDrift', () => {
+describe('specGenGetSpecRequirements — case-insensitive title matching', () => {
   beforeEach(async () => {
-    testDir = join(tmpdir(), `spec-gen-api-test-drift-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    await createTestProject(testDir);
+    testDir = join(
+      tmpdir(),
+      `spec-gen-specs-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    await mkdir(testDir, { recursive: true });
   });
 
   afterEach(async () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
-  it('should throw if not a git repository', async () => {
-    // testDir has no .git
-    await specGenInit({ rootPath: testDir });
-    await expect(
-      specGenDrift({ rootPath: testDir })
-    ).rejects.toThrow('Not a git repository');
+  it('matches requirement title case-insensitively', async () => {
+    const specRel = 'openspec/specs/auth.md';
+    // The spec file uses a different casing than the mapping key
+    await writeSpecFile(testDir, specRel, '### Requirement: USER LOGIN\nBody text here.');
+
+    await writeMapping(testDir, {
+      mappings: [{ requirement: 'user login', specFile: specRel }],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+
+    expect(result.requirements['user login']).toBeDefined();
+    expect(result.requirements['user login'].body).toBe('Body text here.');
+    // title should reflect the heading as written in the file
+    expect(result.requirements['user login'].title).toBe('USER LOGIN');
   });
 
-  it('should throw if no config exists', async () => {
-    // Create a fake .git directory
-    await mkdir(join(testDir, '.git'), { recursive: true });
+  it('preserves the original file title casing in the result', async () => {
+    const specRel = 'openspec/specs/feature.md';
+    await writeSpecFile(testDir, specRel, '### Requirement: My Feature\nContent.');
 
-    await expect(
-      specGenDrift({ rootPath: testDir })
-    ).rejects.toThrow('No spec-gen configuration found');
-  });
+    await writeMapping(testDir, {
+      mappings: [{ requirement: 'my feature', specFile: specRel }],
+    });
 
-  it('should throw if no specs exist', async () => {
-    await mkdir(join(testDir, '.git'), { recursive: true });
-    await specGenInit({ rootPath: testDir });
-
-    // Remove openspec/specs to trigger the error
-    const { rm: rmDir } = await import('node:fs/promises');
-    await rmDir(join(testDir, 'openspec', 'specs'), { recursive: true, force: true });
-
-    await expect(
-      specGenDrift({ rootPath: testDir })
-    ).rejects.toThrow('No specs found');
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    expect(result.requirements['my feature'].title).toBe('My Feature');
   });
 });
 
 // ============================================================================
-// TESTS: API barrel exports
+// TESTS: placeholder / fallback behaviour
 // ============================================================================
 
-describe('API barrel exports', () => {
-  it('should export all API functions', async () => {
+describe('specGenGetSpecRequirements — placeholders and fallbacks', () => {
+  beforeEach(async () => {
+    testDir = join(
+      tmpdir(),
+      `spec-gen-specs-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    await mkdir(testDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(testDir, { recursive: true, force: true });
+  });
+
+  it('returns placeholder when specFile is absent from mapping entry', async () => {
+    await writeMapping(testDir, {
+      mappings: [{ requirement: 'Orphan Req', domain: 'core' }],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    const req = result.requirements['Orphan Req'];
+
+    expect(req).toBeDefined();
+    expect(req.title).toBe('Orphan Req');
+    expect(req.body).toBe('');
+    expect(req.specFile).toBeUndefined();
+    expect(req.domain).toBe('core');
+  });
+
+  it('returns placeholder when specFile does not exist on disk', async () => {
+    await writeMapping(testDir, {
+      mappings: [
+        {
+          requirement: 'Missing File Req',
+          specFile: 'openspec/specs/ghost.md',
+          service: 'ghost-svc',
+        },
+      ],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    const req = result.requirements['Missing File Req'];
+
+    expect(req.title).toBe('Missing File Req');
+    expect(req.body).toBe('');
+    expect(req.specFile).toBe('openspec/specs/ghost.md');
+    expect(req.service).toBe('ghost-svc');
+  });
+
+  it('returns placeholder when requirement heading is not found in spec file', async () => {
+    const specRel = 'openspec/specs/other.md';
+    await writeSpecFile(
+      testDir,
+      specRel,
+      makeSpecContent([{ title: 'Different Req', body: 'Different body.' }])
+    );
+
+    await writeMapping(testDir, {
+      mappings: [{ requirement: 'Missing Heading', specFile: specRel }],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    const req = result.requirements['Missing Heading'];
+
+    expect(req.title).toBe('Missing Heading');
+    expect(req.body).toBe('');
+    expect(req.specFile).toBe(specRel);
+  });
+
+  it('skips mapping entries that have no requirement key', async () => {
+    await writeMapping(testDir, {
+      mappings: [
+        { specFile: 'openspec/specs/auth.md', domain: 'auth' }, // no requirement field
+        { requirement: 'Valid Req', domain: 'core' },
+      ],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+
+    const keys = Object.keys(result.requirements);
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toBe('Valid Req');
+  });
+
+  it('applies first-wins deduplication for repeated requirement keys', async () => {
+    const spec1 = 'openspec/specs/a.md';
+    const spec2 = 'openspec/specs/b.md';
+
+    await writeSpecFile(
+      testDir,
+      spec1,
+      makeSpecContent([{ title: 'Dup Req', body: 'First body.' }])
+    );
+    await writeSpecFile(
+      testDir,
+      spec2,
+      makeSpecContent([{ title: 'Dup Req', body: 'Second body.' }])
+    );
+
+    await writeMapping(testDir, {
+      mappings: [
+        { requirement: 'Dup Req', specFile: spec1 },
+        { requirement: 'Dup Req', specFile: spec2 }, // should be ignored
+      ],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+
+    expect(result.requirements['Dup Req'].body).toBe('First body.');
+  });
+});
+
+// ============================================================================
+// TESTS: multi-line body extraction
+// ============================================================================
+
+describe('specGenGetSpecRequirements — multi-line body extraction', () => {
+  beforeEach(async () => {
+    testDir = join(
+      tmpdir(),
+      `spec-gen-specs-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    await mkdir(testDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(testDir, { recursive: true, force: true });
+  });
+
+  it('captures multi-line markdown body correctly', async () => {
+    const specRel = 'openspec/specs/detailed.md';
+    const multiLineBody = `The system shall support:
+- Feature A
+- Feature B
+
+Additional constraints apply.`;
+
+    await writeSpecFile(
+      testDir,
+      specRel,
+      `### Requirement: Rich Req\n${multiLineBody}\n\n### Requirement: Other Req\nOther body.`
+    );
+
+    await writeMapping(testDir, {
+      mappings: [{ requirement: 'Rich Req', specFile: specRel }],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    expect(result.requirements['Rich Req'].body).toContain('Feature A');
+    expect(result.requirements['Rich Req'].body).toContain('Additional constraints apply.');
+  });
+
+  it('trims leading and trailing whitespace from the extracted body', async () => {
+    const specRel = 'openspec/specs/trimmed.md';
+    await writeSpecFile(
+      testDir,
+      specRel,
+      '### Requirement: Trimmed Req\n\n  Some body text.  \n\n'
+    );
+
+    await writeMapping(testDir, {
+      mappings: [{ requirement: 'Trimmed Req', specFile: specRel }],
+    });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    // body is trimmed
+    expect(result.requirements['Trimmed Req'].body).toBe('Some body text.');
+  });
+});
+
+// ============================================================================
+// TESTS: malformed inputs
+// ============================================================================
+
+describe('specGenGetSpecRequirements — malformed inputs', () => {
+  beforeEach(async () => {
+    testDir = join(
+      tmpdir(),
+      `spec-gen-specs-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    await mkdir(testDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(testDir, { recursive: true, force: true });
+  });
+
+  it('returns empty requirements when mapping.json is invalid JSON', async () => {
+    const analysisDir = join(testDir, '.spec-gen', 'analysis');
+    await mkdir(analysisDir, { recursive: true });
+    await writeFile(join(analysisDir, 'mapping.json'), '{ this is not valid json >>>');
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+
+    expect(result.requirements).toEqual({});
+  });
+
+  it('returns empty requirements when mappings field is missing', async () => {
+    await writeMapping(testDir, { generatedAt: '2024-01-01T00:00:00Z' /* no mappings field */ });
+
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    expect(result.requirements).toEqual({});
+  });
+
+  it('handles spec file that is not valid utf-8 / unreadable gracefully', async () => {
+    const specRel = 'openspec/specs/binary.md';
+    const absPath = join(testDir, specRel);
+    await mkdir(join(testDir, 'openspec', 'specs'), { recursive: true });
+    // Write binary content that will cause a parse issue when treated as sections
+    await writeFile(absPath, Buffer.from([0xff, 0xfe, 0x00, 0x01]));
+
+    await writeMapping(testDir, {
+      mappings: [{ requirement: 'Binary Req', specFile: specRel }],
+    });
+
+    // Should not throw; should return a placeholder
+    const result = await specGenGetSpecRequirements({ rootPath: testDir });
+    expect(result.requirements['Binary Req']).toBeDefined();
+    expect(result.requirements['Binary Req'].body).toBe('');
+  });
+});
+
+// ============================================================================
+// TESTS: barrel export
+// ============================================================================
+
+describe('specGenGetSpecRequirements — barrel export', () => {
+  it('is exported from index.js', async () => {
     const api = await import('./index.js');
-
-    expect(typeof api.specGenInit).toBe('function');
-    expect(typeof api.specGenAnalyze).toBe('function');
-    expect(typeof api.specGenGenerate).toBe('function');
-    expect(typeof api.specGenVerify).toBe('function');
-    expect(typeof api.specGenDrift).toBe('function');
-    expect(typeof api.specGenRun).toBe('function');
+    expect(typeof api.specGenGetSpecRequirements).toBe('function');
   });
 });

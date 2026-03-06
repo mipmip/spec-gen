@@ -118,7 +118,7 @@ describe('ProgressIndicator', () => {
         current: 'src/index.ts',
       });
       expect(consoleSpy).toHaveBeenCalledWith(
-        'Analyzing imports... (src/index.ts)'
+        'Analyzing imports... src/index.ts'
       );
     });
 
@@ -130,7 +130,7 @@ describe('ProgressIndicator', () => {
         total: 50,
       });
       expect(consoleSpy).toHaveBeenCalledWith(
-        'Calculating significance scores... [10/50]'
+        expect.stringMatching(/^Calculating significance scores \[.*\] 20% \(10\/50\)/)
       );
     });
 
@@ -160,7 +160,7 @@ describe('ProgressIndicator', () => {
         stageName: 'Entity Extraction',
       });
       expect(consoleSpy).toHaveBeenCalledWith(
-        'Querying LLM... (stage 2/5: Entity Extraction)'
+        expect.stringMatching(/^Generating \[.*\] 40% \(2\/5\) Entity Extraction$/)
       );
     });
 
@@ -173,7 +173,7 @@ describe('ProgressIndicator', () => {
         tokensUsed: 1500,
       });
       expect(consoleSpy).toHaveBeenCalledWith(
-        'Querying LLM... (stage 3/5: Service Analysis) [1500 tokens]'
+        expect.stringMatching(/^Generating \[.*\] 60% \(3\/5\) Service Analysis \[1500 tokens\]$/)
       );
     });
   });
@@ -187,7 +187,7 @@ describe('ProgressIndicator', () => {
         currentFile: 'user/spec.md',
       });
       expect(consoleSpy).toHaveBeenCalledWith(
-        'Writing specs... (3/6 files) [user/spec.md]'
+        expect.stringMatching(/^Writing specs \[.*\] 50% \(3\/6\) user\/spec\.md$/)
       );
     });
   });
