@@ -1323,7 +1323,6 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
         }
       } catch (e) {
         // Fall back to manual upload UI; errors are shown in console.
-        // eslint-disable-next-line no-console
         console.error('Failed to load graph from', graphUrl, e);
       }
     })();

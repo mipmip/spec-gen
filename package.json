@@ -30,7 +30,7 @@
     "test:coverage": "vitest run --coverage",
     "test:openspec-compat": "vitest run --grep 'openspec' || echo 'No OpenSpec compat tests yet'",
     "test:e2e": "vitest run --grep 'e2e' || echo 'No E2E tests yet'",
-    "lint": "eslint src --ext .ts",
+    "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build && npm run test:run"
   },
