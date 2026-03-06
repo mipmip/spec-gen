@@ -220,6 +220,13 @@ export class Logger {
   }
 
   /**
+   * Register an external spinner so log calls pause/resume it correctly
+   */
+  setActiveSpinner(spinner: Ora | null): void {
+    this.activeSpinner = spinner;
+  }
+
+  /**
    * Clear the active spinner reference
    */
   clearSpinner(): void {
