@@ -2,7 +2,7 @@
  * Tests for specGenGenerate programmatic API
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { specGenGenerate } from './generate.js';
 
 // ============================================================================

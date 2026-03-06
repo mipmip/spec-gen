@@ -9,10 +9,9 @@ import { join } from 'node:path';
 import { access, stat, mkdir, writeFile } from 'node:fs/promises';
 import { readSpecGenConfig } from '../core/services/config-manager.js';
 import { RepositoryMapper } from '../core/analyzer/repository-mapper.js';
-import { DependencyGraphBuilder } from '../core/analyzer/dependency-graph.js';
+import { DependencyGraphBuilder, type DependencyGraphResult } from '../core/analyzer/dependency-graph.js';
 import { AnalysisArtifactGenerator } from '../core/analyzer/artifact-generator.js';
 import type { AnalyzeApiOptions, AnalyzeResult, ProgressCallback, RepositoryMap } from './types.js';
-import type { DependencyGraphResult } from '../core/analyzer/dependency-graph.js';
 
 function progress(onProgress: ProgressCallback | undefined, step: string, status: 'start' | 'progress' | 'complete' | 'skip', detail?: string): void {
   onProgress?.({ phase: 'analyze', step, status, detail });
@@ -74,8 +73,12 @@ export async function specGenAnalyze(options: AnalyzeApiOptions = {}): Promise<A
 
         return {
           repoMap: repoStructure,
-          depGraph: depGraph ?? { nodes: [], edges: [], statistics: { nodeCount: 0, edgeCount: 0, clusterCount: 0, cycleCount: 0, avgDegree: 0 } },
-          artifacts: { repoStructure } as AnalyzeResult['artifacts'],
+          depGraph: depGraph ?? {
+            nodes: [], edges: [], clusters: [], cycles: [],
+            rankings: { byImportance: [], byConnectivity: [], clusterCenters: [], leafNodes: [], bridgeNodes: [], orphanNodes: [] },
+            statistics: { nodeCount: 0, edgeCount: 0, clusterCount: 0, cycleCount: 0, avgDegree: 0, density: 0 },
+          },
+          artifacts: { repoStructure } as unknown as AnalyzeResult['artifacts'],
           duration: Date.now() - startTime,
         };
       }
