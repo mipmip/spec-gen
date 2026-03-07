@@ -176,4 +176,6 @@ test-results/
 .kilocode/
 .vibe/
 result
-docker/embedding-server/Dockerfile
+docker/
+docker-compose.yml
+ARCHITECTURE.md
