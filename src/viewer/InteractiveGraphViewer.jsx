@@ -55,6 +55,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
     const g = parseGraph(rawGraph, clusterPalette);
     return refReport ? enrichGraphWithRefactors(g, refReport) : g;
   }, [rawGraph, clusterPalette, refReport]);
+
   const cycleTheme = () => setThemeName((prev) => {
     const idx = THEME_KEYS.indexOf(prev);
     const next = THEME_KEYS[(idx + 1) % THEME_KEYS.length];
@@ -700,6 +701,23 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
           title="Toggle AI chat"
         >
           CHAT
+        </button>
+        <button
+          onClick={cycleTheme}
+          title="Cycle theme"
+          style={{
+            background: 'none',
+            border: '1px solid var(--bd-muted)',
+            borderRadius: 4,
+            color: 'var(--ac-primary)',
+            fontSize: 8,
+            padding: '3px 8px',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            letterSpacing: '0.06em',
+          }}
+        >
+          {theme.label}
         </button>
         <button
           onClick={cycleTheme}
