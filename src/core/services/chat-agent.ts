@@ -98,7 +98,7 @@ interface ProviderConfig {
   model: string;
 }
 
-async function resolveProviderConfig(directory: string): Promise<ProviderConfig> {
+export async function resolveProviderConfig(directory: string): Promise<ProviderConfig> {
   const geminiKey     = process.env.GEMINI_API_KEY ?? '';
   const anthropicKey  = process.env.ANTHROPIC_API_KEY ?? '';
   const compatBase    = process.env.OPENAI_COMPAT_BASE_URL ?? '';
@@ -154,6 +154,7 @@ async function resolveProviderConfig(directory: string): Promise<ProviderConfig>
 export interface ChatAgentOptions {
   directory: string;
   messages: { role: 'user' | 'assistant'; content: string }[];
+  modelOverride?: string;
   onToolStart?: (name: string) => void;
   onToolEnd?: (name: string) => void;
 }
@@ -435,8 +436,9 @@ async function runAnthropicLoop(
 // ============================================================================
 
 export async function runChatAgent(options: ChatAgentOptions): Promise<ChatAgentResult> {
-  const { directory, messages, onToolStart, onToolEnd } = options;
+  const { directory, messages, modelOverride, onToolStart, onToolEnd } = options;
   const cfg = await resolveProviderConfig(directory);
+  if (modelOverride) cfg.model = modelOverride;
   const callbacks = { onToolStart, onToolEnd };
   if (cfg.kind === 'gemini')    return runGeminiLoop(cfg, directory, messages, callbacks);
   if (cfg.kind === 'anthropic') return runAnthropicLoop(cfg, directory, messages, callbacks);

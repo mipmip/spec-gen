@@ -17,7 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { VectorIndex } from '../../core/analyzer/vector-index.js';
 import { EmbeddingService } from '../../core/analyzer/embedding-service.js';
 import { getSkeletonContent, detectLanguage } from '../../core/analyzer/code-shaper.js';
-import { runChatAgent } from '../../core/services/chat-agent.js';
+import { runChatAgent, resolveProviderConfig } from '../../core/services/chat-agent.js';
 
 const MAX_QUERY_LENGTH = 1000;
 
@@ -365,6 +365,7 @@ export const viewCommand = new Command('view')
                   const body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as {
                     message: string;
                     history?: { role: 'user' | 'assistant'; content: string }[];
+                    model?: string;
                   };
 
                   if (!body.message || typeof body.message !== 'string') {
@@ -374,6 +375,7 @@ export const viewCommand = new Command('view')
                   }
 
                   const history = Array.isArray(body.history) ? body.history : [];
+                  const modelOverride = typeof body.model === 'string' ? body.model : undefined;
 
                   // Build pathToNodeId from the dependency graph on-demand.
                   // Raw dependency-graph.json nodes have the shape { id, file: { path } }.
@@ -407,6 +409,7 @@ export const viewCommand = new Command('view')
                   const { reply, filePaths } = await runChatAgent({
                     directory: rootPath,
                     messages: [...history, { role: 'user', content: body.message }],
+                    modelOverride,
                     onToolStart: (name) => sendEvent({ type: 'tool_start', name }),
                     onToolEnd:   (name) => sendEvent({ type: 'tool_end',   name }),
                   });
@@ -426,6 +429,48 @@ export const viewCommand = new Command('view')
                     res.statusCode = 500;
                     res.end(JSON.stringify({ error: sanitizeErrorMessage((err as Error).message) }));
                   }
+                }
+              });
+
+              devServer.middlewares.use('/api/chat/models', async (req, res) => {
+                try {
+                  const cfg = await resolveProviderConfig(rootPath);
+                  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+
+                  let models: string[] = [];
+                  if (cfg.kind === 'gemini') {
+                    const r = await fetch(
+                      `https://generativelanguage.googleapis.com/v1beta/models?key=${cfg.apiKey}`
+                    );
+                    if (r.ok) {
+                      const data = await r.json() as { models?: Array<{ name: string; supportedGenerationMethods?: string[] }> };
+                      models = (data.models ?? [])
+                        .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+                        .map(m => m.name.replace('models/', ''));
+                    }
+                  } else if (cfg.kind === 'anthropic') {
+                    const r = await fetch(`${cfg.baseUrl}/models`, {
+                      headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
+                    });
+                    if (r.ok) {
+                      const data = await r.json() as { data?: Array<{ id: string }> };
+                      models = (data.data ?? []).map(m => m.id);
+                    }
+                  } else {
+                    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                    if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+                    const r = await fetch(`${cfg.baseUrl}/models`, { headers });
+                    if (r.ok) {
+                      const data = await r.json() as { data?: Array<{ id: string }> };
+                      models = (data.data ?? []).map(m => m.id).sort();
+                    }
+                  }
+
+                  res.statusCode = 200;
+                  res.end(JSON.stringify({ provider: cfg.kind, currentModel: cfg.model, models }));
+                } catch (err) {
+                  res.statusCode = 500;
+                  res.end(JSON.stringify({ error: sanitizeErrorMessage((err as Error).message) }));
                 }
               });
 

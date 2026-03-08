@@ -169,7 +169,15 @@ export function ChatPanel({ onHighlight, onClose }) {
   const [loading, setLoading] = useState(false);
   const [activeTools, setActiveTools] = useState([]); // tools currently running
   const [error, setError] = useState(null);
+  const [modelInfo, setModelInfo] = useState(null); // { provider, currentModel, models }
   const bottomRef = useRef(null);
+
+  useEffect(() => {
+    fetch('/api/chat/models')
+      .then((r) => r.json())
+      .then((data) => { if (!data.error) setModelInfo(data); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -193,7 +201,7 @@ export function ChatPanel({ onHighlight, onClose }) {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history }),
+        body: JSON.stringify({ message: text, history, model: modelInfo?.currentModel }),
       });
 
       if (!res.ok) {
@@ -267,17 +275,18 @@ export function ChatPanel({ onHighlight, onClose }) {
       <div
         style={{
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
+          flexDirection: 'column',
           padding: '6px 10px',
           borderBottom: '1px solid #0f1224',
           flexShrink: 0,
+          gap: 5,
         }}
       >
-        <span style={{ fontSize: 9, color: '#7c6af7', letterSpacing: '0.1em', fontFamily: 'inherit' }}>
-          ✦ DIAGRAM CHAT
-        </span>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 9, color: '#7c6af7', letterSpacing: '0.1em', fontFamily: 'inherit' }}>
+            ✦ DIAGRAM CHAT
+          </span>
+          <div style={{ display: 'flex', gap: 6 }}>
           <button
             onClick={clear}
             title="Clear conversation"
@@ -299,6 +308,31 @@ export function ChatPanel({ onHighlight, onClose }) {
             ×
           </button>
         </div>
+        </div>
+        {/* Model selector */}
+        {modelInfo && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ fontSize: 7, color: '#3a3f5c', letterSpacing: '0.06em', flexShrink: 0 }}>
+              {modelInfo.provider.toUpperCase()}
+            </span>
+            <select
+              value={modelInfo.currentModel}
+              onChange={(e) => setModelInfo((prev) => ({ ...prev, currentModel: e.target.value }))}
+              style={{
+                flex: 1, background: '#0c0e22', border: '1px solid #141830', borderRadius: 3,
+                color: '#7c6af7', fontSize: 7, padding: '1px 3px', fontFamily: 'inherit',
+                cursor: 'pointer', outline: 'none',
+              }}
+            >
+              {modelInfo.models.length === 0 && (
+                <option value={modelInfo.currentModel}>{modelInfo.currentModel}</option>
+              )}
+              {modelInfo.models.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Message list */}
