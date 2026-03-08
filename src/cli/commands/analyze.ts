@@ -479,7 +479,7 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
           console.log(`  ${severity} Code Duplication  (${s.duplicatedFunctions}/${s.totalFunctions} functions):`);
           console.log(`    ├─ Ratio: ${(s.duplicationRatio * 100).toFixed(1)}%`);
           console.log(`    ├─ Clone groups: ${s.cloneGroupCount}`);
-          
+
           // Show top clone types
           const typeCounts: Record<string, number> = { exact: 0, structural: 0, near: 0 };
           for (const group of dup.cloneGroups) {
@@ -489,9 +489,9 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
             .filter(([_, count]) => count > 0)
             .map(([type, count]) => `${count} ${type}`)
             .join('  ·  ');
-          
+
           console.log(`    └─ Types: ${typeLabels}`);
-          
+
           // Show top 5 clone groups
           if (dup.cloneGroups.length > 0) {
             console.log('');
@@ -499,17 +499,17 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
             const topGroups = dup.cloneGroups
               .sort((a: CloneGroup, b: CloneGroup) => b.instances.length - a.instances.length)
               .slice(0, 5);
-            
+
             for (const group of topGroups) {
               const files = group.instances.map((i: CloneInstance) => {
                 const fileParts = i.file.split('/');
                 return `${fileParts[fileParts.length - 2]}/${fileParts[fileParts.length - 1]}:${i.functionName}`;
               }).join('  ');
-              
+
               console.log(`    ${group.type.padEnd(10)} (${group.instances.length}x, ${group.lineCount} lines): ${files}`);
             }
           }
-          
+
           console.log('');
           console.log(`    → ${opts.output}duplicates.json`);
           console.log('');
