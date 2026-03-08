@@ -5,8 +5,10 @@
  */
 
 import { validateDirectory, readCachedContext } from './utils.js';
+import { join } from 'node:path';
 import type { SerializedCallGraph, FunctionNode } from '../../analyzer/call-graph.js';
 import { getFileGodFunctions, extractSubgraph } from '../../analyzer/subgraph-extractor.js';
+import { readSpecGenConfig } from '../config-manager.js';
 
 // ============================================================================
 // SHARED GRAPH HELPERS (also exported for chat-tools.ts)
@@ -161,6 +163,7 @@ export async function handleGetCallGraph(directory: string): Promise<unknown> {
 
 /**
  * Extract a depth-limited subgraph centred on a named function.
+ * Falls back to semantic search if no exact name match is found.
  */
 export async function handleGetSubgraph(
   directory: string,
@@ -178,7 +181,32 @@ export async function handleGetSubgraph(
 
   const cg = ctx.callGraph as SerializedCallGraph;
   const lower = functionName.toLowerCase();
-  const seeds = cg.nodes.filter(n => n.name.toLowerCase().includes(lower));
+  let seeds = cg.nodes.filter(n => n.name.toLowerCase().includes(lower));
+
+  // Fallback to semantic search if no exact substring match
+  if (seeds.length === 0) {
+    try {
+      const { VectorIndex } = await import('../../analyzer/vector-index.js');
+      const { EmbeddingService } = await import('../../analyzer/embedding-service.js');
+      const outputDir = join(absDir, '.spec-gen', 'analysis');
+
+      if (VectorIndex.exists(outputDir)) {
+        let embedSvc: InstanceType<typeof EmbeddingService> | null = null;
+        try { embedSvc = EmbeddingService.fromEnv(); } catch {
+          const cfg = await readSpecGenConfig(absDir);
+          if (cfg?.embedding) embedSvc = EmbeddingService.fromConfig(cfg) ?? null;
+        }
+        if (embedSvc) {
+          const results = await VectorIndex.search(outputDir, functionName, embedSvc, { limit: 1 });
+          if (results.length > 0) {
+            const top = results[0].record;
+            const matched = cg.nodes.find(n => n.id === top.id);
+            if (matched) seeds = [matched];
+          }
+        }
+      }
+    } catch { /* ignore fallback errors */ }
+  }
 
   if (seeds.length === 0) return { error: `No function matching "${functionName}" found in call graph.` };
 
@@ -259,6 +287,7 @@ export async function handleGetSubgraph(
 
 /**
  * Deep impact analysis for a single symbol.
+ * Falls back to semantic search if no exact name match is found.
  */
 export async function handleAnalyzeImpact(
   directory: string,
@@ -276,7 +305,33 @@ export async function handleAnalyzeImpact(
   const hubIds = new Set(cg.hubFunctions.map(n => n.id));
 
   const lower = symbol.toLowerCase();
-  const seeds = cg.nodes.filter(n => n.name.toLowerCase().includes(lower));
+  let seeds = cg.nodes.filter(n => n.name.toLowerCase().includes(lower));
+
+  // Fallback to semantic search if no exact substring match
+  if (seeds.length === 0) {
+    try {
+      const { VectorIndex } = await import('../../analyzer/vector-index.js');
+      const { EmbeddingService } = await import('../../analyzer/embedding-service.js');
+      const outputDir = join(absDir, '.spec-gen', 'analysis');
+
+      if (VectorIndex.exists(outputDir)) {
+      let embedSvc: InstanceType<typeof EmbeddingService> | null = null;
+      try { embedSvc = EmbeddingService.fromEnv(); } catch {
+        const cfg = await readSpecGenConfig(absDir);
+        if (cfg?.embedding) embedSvc = EmbeddingService.fromConfig(cfg) ?? null;
+      }
+      if (embedSvc) {
+        const results = await VectorIndex.search(outputDir, symbol, embedSvc, { limit: 1 });
+        if (results.length > 0) {
+          const top = results[0].record;
+          const matched = cg.nodes.find(n => n.id === top.id);
+          if (matched) seeds = [matched];
+        }
+      }
+      }
+    } catch { /* ignore fallback errors */ }
+  }
+
   if (seeds.length === 0) return { error: `No function matching "${symbol}" found in call graph.` };
 
   const seedIds = seeds.map(n => n.id);
