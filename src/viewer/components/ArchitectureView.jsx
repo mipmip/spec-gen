@@ -47,7 +47,7 @@ export function ArchitectureView({ graph, llmCtx, focusedIds }) {
       const isHov = hovered === cl.id || hovered === toId;
       arrows.push(
         <line
-          key={`${cl.id}→${toId}`}
+          key={`${cl.id}->${toId}`}
           x1={sx} y1={sy} x2={ex} y2={ey}
           stroke={isHov ? '#7c6af7' : '#1e2240'}
           strokeWidth={isHov ? 1.5 : 1}
@@ -108,7 +108,7 @@ export function ArchitectureView({ graph, llmCtx, focusedIds }) {
                 />
                 <rect x={x} y={y} width={4} height={BOX_H} rx={3} ry={3} fill={color} opacity={0.8} />
                 <text x={x + 12} y={y + 18} fill="#c8cde8" fontSize={10} fontWeight="600" fontFamily="inherit">
-                  {cl.name.length > 18 ? cl.name.slice(0, 17) + '…' : cl.name}
+                  {cl.name.length > 18 ? cl.name.slice(0, 17) + '...' : cl.name}
                 </text>
                 <text x={x + 12} y={y + 31} fill={color} fontSize={8} fontFamily="inherit" opacity={0.9}>
                   {ROLE_LABEL[cl.role] ?? cl.role}
@@ -120,7 +120,7 @@ export function ArchitectureView({ graph, llmCtx, focusedIds }) {
                 </text>
                 {cl.dependsOn.length > 0 && (
                   <text x={x + BOX_W - 6} y={y + 18} fill="#3a4060" fontSize={7} fontFamily="inherit" textAnchor="end">
-                    →{cl.dependsOn.length}
+                    {'->'}{ cl.dependsOn.length}
                   </text>
                 )}
               </g>

@@ -155,6 +155,7 @@ export interface ChatAgentOptions {
   directory: string;
   messages: { role: 'user' | 'assistant'; content: string }[];
   modelOverride?: string;
+  signal?: AbortSignal;
   onToolStart?: (name: string) => void;
   onToolEnd?: (name: string) => void;
 }
@@ -170,7 +171,7 @@ function buildSystemPrompt(directory: string): string {
   return `You are a code analysis assistant embedded in a dependency diagram viewer.
 The project directory is: ${directory}
 You have access to tools that query the codebase's static analysis data.
-When calling tools, always pass directory="${directory}" — never ask the user for it.
+When calling tools, always pass directory="${directory}" -- never ask the user for it.
 When the user asks a question, use the appropriate tools to gather information,
 then synthesise a clear, concise answer. Always explain what the highlighted files/functions are.
 Keep replies focused and actionable. Use markdown for code and lists.`;
@@ -210,7 +211,8 @@ async function runOpenAILoop(
   cfg: ProviderConfig,
   directory: string,
   messages: ChatAgentOptions['messages'],
-  callbacks?: Pick<ChatAgentOptions, 'onToolStart' | 'onToolEnd'>
+  callbacks?: Pick<ChatAgentOptions, 'onToolStart' | 'onToolEnd'>,
+  signal?: AbortSignal
 ): Promise<ChatAgentResult> {
   const toolDefs = toChatToolDefinitions();
   const toolMap  = new Map(CHAT_TOOLS.map(t => [t.name, t]));
@@ -225,10 +227,13 @@ async function runOpenAILoop(
   if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`;
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    if (signal?.aborted) break;
+
     const response = await fetch(`${cfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ model: cfg.model, messages: history, tools: toolDefs, tool_choice: 'auto' }),
+      signal,
     });
 
     if (!response.ok) {
@@ -248,7 +253,12 @@ async function runOpenAILoop(
     }
 
     for (const tc of msg.tool_calls) {
-      const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+      let args: Record<string, unknown>;
+      try {
+        args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+      } catch {
+        args = {};
+      }
       const { content, filePaths } = await executeTool(toolMap, directory, tc.function.name, args, callbacks);
       allFilePaths.push(...filePaths);
       history.push({ role: 'tool', tool_call_id: tc.id, content });
@@ -270,7 +280,8 @@ async function runGeminiLoop(
   cfg: ProviderConfig,
   directory: string,
   messages: ChatAgentOptions['messages'],
-  callbacks?: Pick<ChatAgentOptions, 'onToolStart' | 'onToolEnd'>
+  callbacks?: Pick<ChatAgentOptions, 'onToolStart' | 'onToolEnd'>,
+  signal?: AbortSignal
 ): Promise<ChatAgentResult> {
   const toolMap = new Map(CHAT_TOOLS.map(t => [t.name, t]));
   const allFilePaths: string[] = [];
@@ -292,6 +303,8 @@ async function runGeminiLoop(
   const headers = { 'Content-Type': 'application/json' };
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    if (signal?.aborted) break;
+
     const body = {
       systemInstruction: { parts: [{ text: buildSystemPrompt(directory) }] },
       contents,
@@ -299,7 +312,7 @@ async function runGeminiLoop(
       tool_config: { function_calling_config: { mode: 'AUTO' } },
     };
 
-    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
@@ -355,7 +368,8 @@ async function runAnthropicLoop(
   cfg: ProviderConfig,
   directory: string,
   messages: ChatAgentOptions['messages'],
-  callbacks?: Pick<ChatAgentOptions, 'onToolStart' | 'onToolEnd'>
+  callbacks?: Pick<ChatAgentOptions, 'onToolStart' | 'onToolEnd'>,
+  signal?: AbortSignal
 ): Promise<ChatAgentResult> {
   const toolMap = new Map(CHAT_TOOLS.map(t => [t.name, t]));
   const allFilePaths: string[] = [];
@@ -378,6 +392,8 @@ async function runAnthropicLoop(
   };
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    if (signal?.aborted) break;
+
     const response = await fetch(`${cfg.baseUrl}/messages`, {
       method: 'POST',
       headers,
@@ -388,6 +404,7 @@ async function runAnthropicLoop(
         tools,
         messages: history,
       }),
+      signal,
     });
 
     if (!response.ok) {
@@ -440,11 +457,11 @@ async function runAnthropicLoop(
 // ============================================================================
 
 export async function runChatAgent(options: ChatAgentOptions): Promise<ChatAgentResult> {
-  const { directory, messages, modelOverride, onToolStart, onToolEnd } = options;
+  const { directory, messages, modelOverride, signal, onToolStart, onToolEnd } = options;
   const cfg = await resolveProviderConfig(directory);
   if (modelOverride) cfg.model = modelOverride;
   const callbacks = { onToolStart, onToolEnd };
-  if (cfg.kind === 'gemini')    return runGeminiLoop(cfg, directory, messages, callbacks);
-  if (cfg.kind === 'anthropic') return runAnthropicLoop(cfg, directory, messages, callbacks);
-  return runOpenAILoop(cfg, directory, messages, callbacks);
+  if (cfg.kind === 'gemini')    return runGeminiLoop(cfg, directory, messages, callbacks, signal);
+  if (cfg.kind === 'anthropic') return runAnthropicLoop(cfg, directory, messages, callbacks, signal);
+  return runOpenAILoop(cfg, directory, messages, callbacks, signal);
 }

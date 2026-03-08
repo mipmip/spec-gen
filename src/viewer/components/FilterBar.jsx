@@ -74,7 +74,7 @@ export function FilterBar({ filters, setFilters, stats, clusterNames }) {
       />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-        <span style={{ color: '#2a2f4a' }}>Score ≥</span>
+        <span style={{ color: '#2a2f4a' }}>{'Score >='}</span>
         <input
           type="range"
           min={0}

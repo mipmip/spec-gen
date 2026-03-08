@@ -501,7 +501,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
           <input
             value={search}
             onChange={(e) => handleSearch(e.target.value)}
-            placeholder="search name, path, export, tag…"
+            placeholder="search name, path, export, tag..."
             style={{
               background: '#0c0e22',
               border: '1px solid #141830',
@@ -540,7 +540,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
                 lineHeight: 1,
               }}
             >
-              ×
+              x
             </span>
           )}
           {focusedIds.length > 0 && (
@@ -574,7 +574,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
               }}
             >
               <div style={{ padding: '4px 8px', borderBottom: '1px solid #1a1f38', fontSize: 8, color: '#3a3f5c', fontFamily: 'inherit' }}>
-                ✦ semantic matches
+                semantic matches
               </div>
               {semanticResults.map((r) => {
                 const node = graph?.nodes.find((n) => n.path === r.filePath || n.path.endsWith(r.filePath) || r.filePath.endsWith(n.path));
@@ -641,7 +641,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
           }}
           title="Load mapping.json"
         >
-          {mapping ? '✓ MAP' : 'MAP'}
+          {mapping ? '[x] MAP' : 'MAP'}
         </button>
         <button
           onClick={() => specRef.current.click()}
@@ -658,7 +658,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
           }}
           title="Load spec.md"
         >
-          {Object.keys(specReqs).length ? '✓ SPEC' : 'SPEC'}
+          {Object.keys(specReqs).length ? '[x] SPEC' : 'SPEC'}
         </button>
         <button
           onClick={() => setChatOpen((v) => !v)}
@@ -675,7 +675,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
           }}
           title="Toggle AI chat"
         >
-          ✦ CHAT
+          CHAT
         </button>
         <input
           ref={mappingRef}
@@ -768,8 +768,8 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
               }}
             >
               {viewMode === 'clusters'
-                ? 'CLICK CLUSTER → EXPAND  ·  CLICK NODE → INSPECT'
-                : 'CLICK NODE → INSPECT'}
+                ? 'CLICK CLUSTER -> EXPAND  ·  CLICK NODE -> INSPECT'
+                : 'CLICK NODE -> INSPECT'}
             </div>
           )}
         </div>
@@ -840,7 +840,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
                 </div>
                 <Row
                   label="ext"
-                  value={<Chip color={extColor(selectedNode.ext)}>{selectedNode.ext || '—'}</Chip>}
+                  value={<Chip color={extColor(selectedNode.ext)}>{selectedNode.ext || '--'}</Chip>}
                 />
                 <Row label="lines" value={selectedNode.lines} />
                 <Row label="size" value={`${(selectedNode.size / 1024).toFixed(1)} KB`} />
@@ -1259,8 +1259,8 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
                           ) : (
                             <div style={{ padding: '7px 9px', fontSize: 8, color: '#2a2f4a' }}>
                               {req
-                                ? 'Requirement title mismatch — spec section not found in the spec file.'
-                                : <>Spec not loaded — run <code style={{ color: '#7c6af7' }}>spec-gen view</code> or load <code style={{ color: '#7c6af7' }}>spec.md</code> manually.</>}
+                                ? 'Requirement title mismatch -- spec section not found in the spec file.'
+                                : <>Spec not loaded -- run <code style={{ color: '#7c6af7' }}>spec-gen view</code> or load <code style={{ color: '#7c6af7' }}>spec.md</code> manually.</>}
                             </div>
                           )}
                           <div
@@ -1286,7 +1286,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
             )}
             {tab === 'skeleton' && selectedNode && (
               <div>
-                {skeletonLoading && <Hint>Loading…</Hint>}
+                {skeletonLoading && <Hint>Loading...</Hint>}
                 {!skeletonLoading && !skeletonData && <Hint>Skeleton unavailable for this file.</Hint>}
                 {!skeletonLoading && skeletonData && (
                   <div>
@@ -1359,7 +1359,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
                       }}
                     >
                       <span style={{ fontSize: 8, color: '#2a2f4a', minWidth: 12 }}>{i + 1}</span>
-                      <span style={{ fontSize: 8, color: extColor(n.ext) }}>{n.ext || '—'}</span>
+                      <span style={{ fontSize: 8, color: extColor(n.ext) }}>{n.ext || '--'}</span>
                       <span
                         style={{
                           fontSize: 9,
