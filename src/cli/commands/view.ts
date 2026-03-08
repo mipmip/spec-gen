@@ -400,6 +400,8 @@ export const viewCommand = new Command('view')
 
                   const sendEvent = (data: object) => {
                     res.write(`data: ${JSON.stringify(data)}\n\n`);
+                    // Flush immediately so SSE events reach the client without buffering
+                    (res as unknown as { flush?: () => void }).flush?.();
                   };
 
                   const { reply, filePaths } = await runChatAgent({
