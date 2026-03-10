@@ -33,6 +33,8 @@ export interface EmbeddingConfig {
   model: string;
   /** API key — optional for local servers */
   apiKey?: string;
+  /** Maximum number of texts per API call (default: 64) */
+  batchSize?: number;
   /** Disable SSL certificate verification (e.g. self-signed certs on local servers) */
   skipSslVerify?: boolean;
 }
