@@ -317,14 +317,14 @@ export class OpenSpecFormatGenerator {
       lines.push('');
       const archStyleNote = typeof architecture.architectureStyle === 'string'
         ? architecture.architectureStyle
-        : (architecture.architectureStyle as any)?.pattern ?? (architecture.architectureStyle as any)?.name ?? JSON.stringify(architecture.architectureStyle);
+        : (architecture.architectureStyle as Record<string, unknown>)?.pattern ?? (architecture.architectureStyle as Record<string, unknown>)?.name ?? JSON.stringify(architecture.architectureStyle);
       lines.push(`- **Architecture Style**: ${archStyleNote}`);
       if (architecture.securityModel && architecture.securityModel !== 'Unknown') {
         lines.push(`- **Security Model**: ${architecture.securityModel}`);
       }
       if (architecture.integrations.length > 0) {
         const integrationNames = architecture.integrations.map(i =>
-          typeof i === 'string' ? i : (i as any).name ?? JSON.stringify(i)
+          typeof i === 'string' ? i : (i as Record<string, unknown>).name ?? JSON.stringify(i)
         );
         lines.push(`- **External Integrations**: ${integrationNames.join(', ')}`);
       }
@@ -571,9 +571,9 @@ export class OpenSpecFormatGenerator {
     const archStyle = architecture.architectureStyle;
     const archStyleStr = typeof archStyle === 'string'
       ? archStyle
-      : (archStyle as any)?.pattern ?? (archStyle as any)?.name ?? JSON.stringify(archStyle);
+      : (archStyle as Record<string, unknown>)?.pattern ?? (archStyle as Record<string, unknown>)?.name ?? JSON.stringify(archStyle);
     const archJustification = typeof archStyle === 'object' && archStyle !== null
-      ? (archStyle as any)?.justification
+      ? (archStyle as Record<string, unknown>)?.justification
       : undefined;
     lines.push(this.wrapText(archStyleStr));
     if (archJustification) {
@@ -670,9 +670,9 @@ export class OpenSpecFormatGenerator {
       lines.push('| System | Purpose |');
       lines.push('|--------|---------|');
       for (const integration of architecture.integrations) {
-        const name = typeof integration === 'string' ? integration : (integration as any).name ?? String(integration);
+        const name = typeof integration === 'string' ? integration : (integration as Record<string, unknown>).name ?? String(integration);
         const purpose = typeof integration === 'object' && integration !== null
-          ? ((integration as any).purpose ?? 'External integration')
+          ? ((integration as Record<string, unknown>).purpose ?? 'External integration')
           : 'External integration';
         lines.push(`| ${name} | ${purpose} |`);
       }

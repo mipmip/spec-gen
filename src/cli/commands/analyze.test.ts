@@ -395,13 +395,13 @@ describe('analyze command', () => {
       const fsMod  = await import('node:fs/promises');
       const cfgMod = await import('../../core/services/config-manager.js');
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       mockAccess   = vi.mocked(fsMod.access as any);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       mockStat     = vi.mocked(fsMod.stat as any);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       mockMkdir    = vi.mocked(fsMod.mkdir as any);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       mockReadFile = vi.mocked(fsMod.readFile as any);
       mockReadSpecGenConfig = vi.mocked(cfgMod.readSpecGenConfig);
 

@@ -1055,7 +1055,7 @@ describe('handleCheckSpecDrift', () => {
 
   it('returns error when no specs directory exists', async () => {
     vi.mocked(isGitRepository).mockResolvedValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     vi.mocked(readSpecGenConfig).mockResolvedValue({ openspecPath: 'openspec' } as any);
     // openspec/specs does NOT exist in driftDir → stat throws
     const result = await handleCheckSpecDrift(driftDir);
@@ -1065,10 +1065,10 @@ describe('handleCheckSpecDrift', () => {
   it('returns empty DriftResult when no files changed', async () => {
     await mkdir(join(driftDir, 'openspec', 'specs'), { recursive: true });
     vi.mocked(isGitRepository).mockResolvedValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     vi.mocked(readSpecGenConfig).mockResolvedValue({ openspecPath: 'openspec' } as any);
     vi.mocked(getChangedFiles).mockResolvedValue(
-      { files: [], resolvedBase: 'main', currentBranch: 'feature' } as any // eslint-disable-line @typescript-eslint/no-explicit-any
+      { files: [], resolvedBase: 'main', currentBranch: 'feature' } as any  
     );
     const result = await handleCheckSpecDrift(driftDir) as DriftResult;
     expect(result.hasDrift).toBe(false);
@@ -1080,12 +1080,12 @@ describe('handleCheckSpecDrift', () => {
   it('returns DriftResult with no issues when no drift', async () => {
     await mkdir(join(driftDir, 'openspec', 'specs'), { recursive: true });
     vi.mocked(isGitRepository).mockResolvedValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     vi.mocked(readSpecGenConfig).mockResolvedValue({ openspecPath: 'openspec' } as any);
     vi.mocked(getChangedFiles).mockResolvedValue(
-      { files: [{ path: 'src/auth.ts', status: 'modified', additions: 5, deletions: 1, isTest: false }], resolvedBase: 'main', currentBranch: 'feature' } as any // eslint-disable-line @typescript-eslint/no-explicit-any
+      { files: [{ path: 'src/auth.ts', status: 'modified', additions: 5, deletions: 1, isTest: false }], resolvedBase: 'main', currentBranch: 'feature' } as any  
     );
-    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 3 } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 3 } as any);  
     vi.mocked(buildADRMap).mockResolvedValue(null);
     vi.mocked(detectDrift).mockResolvedValue(makeDriftResult());
     const result = await handleCheckSpecDrift(driftDir) as DriftResult;
@@ -1096,12 +1096,12 @@ describe('handleCheckSpecDrift', () => {
   it('returns DriftResult with issues when drift detected', async () => {
     await mkdir(join(driftDir, 'openspec', 'specs'), { recursive: true });
     vi.mocked(isGitRepository).mockResolvedValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     vi.mocked(readSpecGenConfig).mockResolvedValue({ openspecPath: 'openspec' } as any);
     vi.mocked(getChangedFiles).mockResolvedValue(
-      { files: [{ path: 'src/auth.ts', status: 'modified', additions: 20, deletions: 5, isTest: false }], resolvedBase: 'main', currentBranch: 'feature' } as any // eslint-disable-line @typescript-eslint/no-explicit-any
+      { files: [{ path: 'src/auth.ts', status: 'modified', additions: 20, deletions: 5, isTest: false }], resolvedBase: 'main', currentBranch: 'feature' } as any  
     );
-    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 3 } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 3 } as any);  
     vi.mocked(buildADRMap).mockResolvedValue(null);
     vi.mocked(detectDrift).mockResolvedValue(makeDriftResult({
       hasDrift: true,
@@ -1126,12 +1126,12 @@ describe('handleCheckSpecDrift', () => {
   it('passes base, domains, failOn to detectDrift', async () => {
     await mkdir(join(driftDir, 'openspec', 'specs'), { recursive: true });
     vi.mocked(isGitRepository).mockResolvedValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     vi.mocked(readSpecGenConfig).mockResolvedValue({ openspecPath: 'openspec' } as any);
     vi.mocked(getChangedFiles).mockResolvedValue(
-      { files: [{ path: 'src/orders.ts', status: 'modified', additions: 1, deletions: 0, isTest: false }], resolvedBase: 'develop', currentBranch: 'feature' } as any // eslint-disable-line @typescript-eslint/no-explicit-any
+      { files: [{ path: 'src/orders.ts', status: 'modified', additions: 1, deletions: 0, isTest: false }], resolvedBase: 'develop', currentBranch: 'feature' } as any  
     );
-    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 2 } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 2 } as any);  
     vi.mocked(buildADRMap).mockResolvedValue(null);
     vi.mocked(detectDrift).mockResolvedValue(makeDriftResult());
     await handleCheckSpecDrift(driftDir, 'develop', [], ['orders'], 'error');
@@ -1146,15 +1146,15 @@ describe('handleCheckSpecDrift', () => {
   it('truncates files list when exceeding maxFiles', async () => {
     await mkdir(join(driftDir, 'openspec', 'specs'), { recursive: true });
     vi.mocked(isGitRepository).mockResolvedValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     vi.mocked(readSpecGenConfig).mockResolvedValue({ openspecPath: 'openspec' } as any);
     const manyFiles = Array.from({ length: 10 }, (_, i) => ({
       path: `src/file${i}.ts`, status: 'modified', additions: 1, deletions: 0, isTest: false,
     }));
     vi.mocked(getChangedFiles).mockResolvedValue(
-      { files: manyFiles, resolvedBase: 'main', currentBranch: 'feat' } as any // eslint-disable-line @typescript-eslint/no-explicit-any
+      { files: manyFiles, resolvedBase: 'main', currentBranch: 'feat' } as any  
     );
-    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 5 } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 5 } as any);  
     vi.mocked(buildADRMap).mockResolvedValue(null);
     vi.mocked(detectDrift).mockResolvedValue(makeDriftResult({ totalChangedFiles: 10 }));
     // maxFiles = 3 → detectDrift receives only 3 files
@@ -1166,15 +1166,15 @@ describe('handleCheckSpecDrift', () => {
   it('sets totalChangedFiles to actual count (before truncation)', async () => {
     await mkdir(join(driftDir, 'openspec', 'specs'), { recursive: true });
     vi.mocked(isGitRepository).mockResolvedValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     vi.mocked(readSpecGenConfig).mockResolvedValue({ openspecPath: 'openspec' } as any);
     const manyFiles = Array.from({ length: 5 }, (_, i) => ({
       path: `src/file${i}.ts`, status: 'modified', additions: 1, deletions: 0, isTest: false,
     }));
     vi.mocked(getChangedFiles).mockResolvedValue(
-      { files: manyFiles, resolvedBase: 'main', currentBranch: 'feat' } as any // eslint-disable-line @typescript-eslint/no-explicit-any
+      { files: manyFiles, resolvedBase: 'main', currentBranch: 'feat' } as any  
     );
-    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 5 } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+    vi.mocked(buildSpecMap).mockResolvedValue({ domainCount: 1, totalMappedFiles: 5 } as any);  
     vi.mocked(buildADRMap).mockResolvedValue(null);
     vi.mocked(detectDrift).mockResolvedValue(makeDriftResult());
     const result = await handleCheckSpecDrift(driftDir, 'auto', [], [], 'warning', 2) as DriftResult;
@@ -1323,7 +1323,7 @@ describe('handleSuggestInsertionPoints', () => {
 
   it('falls back to fromConfig when fromEnv throws', async () => {
     vi.mocked(EmbeddingService.fromEnv).mockImplementation(() => { throw new Error('no env'); });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     vi.mocked(readSpecGenConfig).mockResolvedValue({ embedding: { baseUrl: 'http://x', model: 'm' } } as any);
     vi.mocked(EmbeddingService.fromConfig).mockReturnValue(mockEmbedSvc as never);
     vi.mocked(VectorIndex.search).mockResolvedValue([makeFakeResult('fn', 0.1)]);

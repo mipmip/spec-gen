@@ -36,6 +36,12 @@ export default tseslint.config(
     },
   },
   {
+    files: ['src/**/*.test.ts', 'src/**/*.spec.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+  {
     ignores: ['dist/**', 'node_modules/**', 'examples/**', '*.config.js', '*.config.ts'],
   }
 );
