@@ -16,6 +16,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { VectorIndex } from './vector-index.js';
 import { EmbeddingService } from './embedding-service.js';
@@ -283,6 +284,94 @@ describe('RIG-17 — e2e pipeline on real spec-gen codebase', () => {
       }
     });
   }
+
+  // --------------------------------------------------------------------------
+  // GraphRAG — depth-1 call graph expansion adds callee files that semantic
+  // search alone would miss.
+  //
+  // Pattern mirrors SpecGenerationPipeline.semanticFiles():
+  //   1. VectorIndex.search seeds the file set
+  //   2. For each node in a seed file, add all direct callees
+  //
+  // The test picks queries where the callee file is semantically distant from
+  // the query (it would never appear in top-5 without expansion), verifying
+  // that the call graph adds genuine recall value.
+  // --------------------------------------------------------------------------
+
+  it('GraphRAG: graph expansion adds ast-chunker callee (signature-extractor) not reachable by semantic search', async () => {
+    if (skipIfNotReady('GraphRAG — ast-chunker expansion')) return;
+
+    // Step 1: semantic seed
+    const query = 'split code at class and function declaration boundaries then prepend import header to each chunk';
+    const seedResults = await VectorIndex.search(INDEX_DIR, query, embedSvc, { limit: 5 });
+    const seedPaths = new Set(seedResults.map(r => r.record.filePath));
+
+    // ast-chunker.ts must be in the seed (verified by hard-query tests)
+    expect([...seedPaths].some(p => p.includes('ast-chunker')), 'ast-chunker.ts not in semantic seed').toBe(true);
+
+    // signature-extractor.ts must NOT be in the semantic-only top-5
+    expect([...seedPaths].some(p => p.includes('signature-extractor')),
+      'signature-extractor.ts unexpectedly in semantic top-5 — graph expansion test loses value').toBe(false);
+
+    // Step 2: load serialized call graph from analysis artifacts
+    const ctx = JSON.parse(await readFile(join(INDEX_DIR, 'llm-context.json'), 'utf-8')) as {
+      callGraph: { nodes: Array<{ id: string; filePath: string }>; edges: Array<{ callerId: string; calleeId: string }> };
+    };
+    const cg = ctx.callGraph;
+    const nodeFile = new Map(cg.nodes.map(n => [n.id, n.filePath]));
+
+    // Step 3: depth-1 expansion
+    const expandedPaths = new Set(seedPaths);
+    for (const node of cg.nodes) {
+      if (!seedPaths.has(node.filePath)) continue;
+      for (const edge of cg.edges) {
+        if (edge.callerId !== node.id) continue;
+        const calleePath = nodeFile.get(edge.calleeId);
+        if (calleePath) expandedPaths.add(calleePath);
+      }
+    }
+
+    // signature-extractor.ts is called by ast-chunker.ts — must appear after expansion
+    expect([...expandedPaths].some(p => p.includes('signature-extractor')),
+      `signature-extractor.ts not found after graph expansion.\nExpanded: ${[...expandedPaths].join(', ')}`).toBe(true);
+  });
+
+  it('GraphRAG: graph expansion adds vector-index callee (code-shaper) not reachable by semantic search', async () => {
+    if (skipIfNotReady('GraphRAG — vector-index expansion')) return;
+
+    // Step 1: semantic seed
+    const query = 'merge dense embedding ranking and sparse keyword ranking into a single score';
+    const seedResults = await VectorIndex.search(INDEX_DIR, query, embedSvc, { limit: 5 });
+    const seedPaths = new Set(seedResults.map(r => r.record.filePath));
+
+    // vector-index.ts must be in the seed (verified by rrfScore hard-query test)
+    expect([...seedPaths].some(p => p.includes('vector-index.ts')), 'vector-index.ts not in semantic seed').toBe(true);
+
+    // code-shaper.ts must NOT be in the semantic-only top-5
+    expect([...seedPaths].some(p => p.includes('code-shaper')),
+      'code-shaper.ts unexpectedly in semantic top-5 — graph expansion test loses value').toBe(false);
+
+    // Step 2 + 3: load call graph and expand
+    const ctx = JSON.parse(await readFile(join(INDEX_DIR, 'llm-context.json'), 'utf-8')) as {
+      callGraph: { nodes: Array<{ id: string; filePath: string }>; edges: Array<{ callerId: string; calleeId: string }> };
+    };
+    const cg = ctx.callGraph;
+    const nodeFile = new Map(cg.nodes.map(n => [n.id, n.filePath]));
+
+    const expandedPaths = new Set(seedPaths);
+    for (const node of cg.nodes) {
+      if (!seedPaths.has(node.filePath)) continue;
+      for (const edge of cg.edges) {
+        if (edge.callerId !== node.id) continue;
+        const calleePath = nodeFile.get(edge.calleeId);
+        if (calleePath) expandedPaths.add(calleePath);
+      }
+    }
+
+    // code-shaper.ts is called by vector-index.ts for skeleton body extraction
+    expect([...expandedPaths].some(p => p.includes('code-shaper')),
+      `code-shaper.ts not found after graph expansion.\nExpanded: ${[...expandedPaths].join(', ')}`).toBe(true);
+  });
 
   // --------------------------------------------------------------------------
   // Result quality — scores in valid range, no undefined fields
