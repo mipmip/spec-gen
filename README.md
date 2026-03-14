@@ -89,7 +89,7 @@ npm run dev
 
 Scans your codebase using pure static analysis:
 - Walks the directory tree, respects .gitignore, scores files by significance
-- Parses imports and exports to build a dependency graph (TypeScript, JavaScript, Python, Go, Rust, Ruby, Java)
+- Parses imports and exports to build a dependency graph (TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C++)
 - Detects HTTP cross-language edges: matches `fetch`/`axios`/`ky`/`got` calls in JS/TS files to FastAPI/Flask/Django route definitions in Python files, creating cross-language dependency edges with `exact`, `path`, or `fuzzy` confidence
 - Resolves Python absolute imports (`from services.retriever import X`) to local files
 - Clusters related files into structural business domains automatically
@@ -465,8 +465,22 @@ spec-gen generate [options]
   --adr                  # Also generate ADRs
   --adr-only             # Generate only ADRs
   --reanalyze            # Force fresh analysis even if recent exists
+  --analysis <path>      # Path to existing analysis directory
   --output-dir <path>    # Override openspec output location
   -y, --yes              # Skip confirmation prompts
+```
+
+### Run Options
+
+```bash
+spec-gen run [options]
+  --force                # Reinitialize even if config exists
+  --reanalyze            # Force fresh analysis even if recent exists
+  --model <name>         # LLM model to use for generation
+  --dry-run              # Show what would be done without making changes
+  -y, --yes              # Skip all confirmation prompts
+  --max-files <n>        # Maximum files to analyze (default: 500)
+  --adr                  # Also generate Architecture Decision Records
 ```
 
 ### Analyze Options
@@ -607,7 +621,7 @@ All tools run on **pure static analysis** -- no LLM quota consumed.
 | Tool | Description | Requires prior analysis |
 |------|-------------|:---:|
 | `analyze_codebase` | Run full static analysis: repo structure, dependency graph, call graph (hub functions, entry points, layer violations), and top refactoring priorities. Results cached for 1 hour (`force: true` to bypass). | No |
-| `get_call_graph` | Hub functions (high fan-in), entry points (no internal callers), and architectural layer violations. Supports TypeScript, JavaScript, Python, Go, Rust, Ruby, Java. | Yes |
+| `get_call_graph` | Hub functions (high fan-in), entry points (no internal callers), and architectural layer violations. Supports TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C++. | Yes |
 | `get_signatures` | Compact function/class signatures per file. Filter by path substring with `filePattern`. Useful for understanding a module's public API without reading full source. | Yes |
 | `get_duplicate_report` | Detect duplicate code: Type 1 (exact clones), Type 2 (structural -- renamed variables), Type 3 (near-clones with Jaccard similarity >= 0.7). Groups sorted by impact. | Yes |
 
