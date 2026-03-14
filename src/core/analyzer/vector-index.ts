@@ -134,7 +134,8 @@ export class VectorIndex {
 
     const sigIndex = buildSignatureIndex(signatures);
 
-    // Build records (without vectors first, to batch-embed all texts)
+    // Build records from call graph nodes
+    const nodeIds = new Set(nodes.map(n => n.id));
     const records: Omit<FunctionRecord, 'vector'>[] = nodes.map(node => {
       const { signature, docstring } = findSignatureEntry(node, sigIndex);
       return {
@@ -152,6 +153,32 @@ export class VectorIndex {
         text: buildText(node, signature, docstring),
       };
     });
+
+    // Also index signature entries that have no call graph node (constants, type aliases, etc.)
+    for (const fsm of signatures) {
+      for (const entry of fsm.entries) {
+        const syntheticId = `${fsm.path}::${entry.name}`;
+        if (nodeIds.has(syntheticId)) continue; // already covered by call graph
+        // Skip if any call graph node from this file matches the name
+        if (nodes.some(n => n.filePath === fsm.path && n.name === entry.name)) continue;
+        const sig = entry.signature ?? '';
+        const doc = entry.docstring ?? '';
+        records.push({
+          id: syntheticId,
+          name: entry.name,
+          filePath: fsm.path,
+          className: '',
+          language: fsm.language,
+          signature: sig,
+          docstring: doc,
+          fanIn: 0,
+          fanOut: 0,
+          isHub: false,
+          isEntryPoint: false,
+          text: `[${fsm.language}] ${fsm.path} ${entry.name}\n${sig}${doc ? '\n' + doc : ''}`,
+        });
+      }
+    }
 
     // Batch-embed all texts
     const texts = records.map(r => r.text);

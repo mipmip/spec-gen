@@ -1,4 +1,6 @@
 import { CLUSTER_PALETTE } from './constants.js';
+export { CLUSTER_PALETTE } from './constants.js';
+export { CLUSTER_PALETTE_LIGHT } from './constants.js';
 
 export function parseSpecRequirements(mdText) {
   const reqs = {};
@@ -39,7 +41,7 @@ export function normalizePath(p) {
   return (p || '').replace(/\\/g, '/').replace(/^\/+/, '');
 }
 
-export function parseGraph(raw) {
+export function parseGraph(raw, palette = CLUSTER_PALETTE) {
   const clusterByNode = {};
   (raw.clusters || []).forEach((cl, ci) => {
     cl.files.forEach((fid) => {
@@ -47,7 +49,7 @@ export function parseGraph(raw) {
         name: cl.name,
         index: ci,
         id: cl.id,
-        color: CLUSTER_PALETTE[ci % CLUSTER_PALETTE.length],
+        color: palette[ci % palette.length],
       };
     });
   });
@@ -83,7 +85,7 @@ export function parseGraph(raw) {
     id: cl.id,
     name: cl.name,
     files: cl.files,
-    color: CLUSTER_PALETTE[ci % CLUSTER_PALETTE.length],
+    color: palette[ci % palette.length],
   }));
 
   return {

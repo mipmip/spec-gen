@@ -17,6 +17,7 @@ export function ClusterGraph({
   affectedIds,
   linkedIds,
   focusedIds,
+  noGlow,
 }) {
   const clusterPos = useMemo(
     () => computeClusterLayout(clusters),
@@ -112,13 +113,13 @@ export function ClusterGraph({
     >
       <defs>
         <marker id="carr" markerWidth="6" markerHeight="6" refX="5" refY="2.5" orient="auto">
-          <path d="M0,0 L0,5 L6,2.5z" fill="#2a3060" />
+          <path d="M0,0 L0,5 L6,2.5z" style={{ fill: 'var(--ac-cluster-arr)' }} />
         </marker>
         <marker id="carr-sel" markerWidth="6" markerHeight="6" refX="5" refY="2.5" orient="auto">
-          <path d="M0,0 L0,5 L6,2.5z" fill="#7c6af7" />
+          <path d="M0,0 L0,5 L6,2.5z" style={{ fill: 'var(--ac-primary)' }} />
         </marker>
         <marker id="carr-in" markerWidth="6" markerHeight="6" refX="5" refY="2.5" orient="auto">
-          <path d="M0,0 L0,5 L6,2.5z" fill="#3ecfcf" />
+          <path d="M0,0 L0,5 L6,2.5z" style={{ fill: 'var(--ac-teal)' }} />
         </marker>
         <filter id="cglow">
           <feGaussianBlur stdDeviation="6" result="b" />
@@ -139,7 +140,11 @@ export function ClusterGraph({
       <g transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
         {/* Inter-cluster edges */}
         {!selectedId &&
-          clusterEdges.map((e) => {
+          (() => {
+            const focusedClusterIds = focusedIds?.length > 0
+              ? new Set(nodes.filter((n) => focusedIds.includes(n.id)).map((n) => n.cluster.id))
+              : null;
+            return clusterEdges.map((e) => {
             const s = clusterPos[e.source],
               t = clusterPos[e.target];
             if (!s || !t) return null;
@@ -151,6 +156,8 @@ export function ClusterGraph({
             const rs = 38,
               rt = 38;
             const w = Math.min(1 + e.count * 0.15, 4);
+            const isDimEdge = focusedClusterIds &&
+              !focusedClusterIds.has(e.source) && !focusedClusterIds.has(e.target);
             return (
               <g key={e.id}>
                 <line
@@ -158,9 +165,9 @@ export function ClusterGraph({
                   y1={s.y + ny * rs}
                   x2={t.x - nx * (rt + 5)}
                   y2={t.y - ny * (rt + 5)}
-                  stroke="#1e2448"
+                  stroke="var(--ac-arrow)"
                   strokeWidth={w}
-                  strokeOpacity={0.5}
+                  strokeOpacity={isDimEdge ? 0.06 : 0.5}
                   markerEnd="url(#carr)"
                 />
                 <text
@@ -168,15 +175,15 @@ export function ClusterGraph({
                   y={(s.y + ny * rs + t.y - ny * (rt + 5)) / 2 - 4}
                   textAnchor="middle"
                   fontSize={7}
-                  fill="#2a3060"
                   fontFamily="'JetBrains Mono',monospace"
-                  style={{ pointerEvents: 'none' }}
+                  style={{ pointerEvents: 'none', fill: 'var(--ac-cluster-arr)' }}
                 >
                   {e.count}
                 </text>
               </g>
             );
-          })}
+          });
+          })()}
 
         {/* Node-level edges when a node is selected */}
         {selectedId &&
@@ -208,7 +215,7 @@ export function ClusterGraph({
                     y1={sp.y + ny * 14}
                     x2={tp.x - nx * 19}
                     y2={tp.y - ny * 19}
-                    stroke={isOut ? '#7c6af7' : '#3ecfcf'}
+                    stroke={isOut ? 'var(--ac-primary)' : 'var(--ac-teal)'}
                     strokeWidth={1.5}
                     strokeOpacity={0.9}
                     strokeDasharray={e.isType ? '4 2' : undefined}
@@ -239,6 +246,9 @@ export function ClusterGraph({
                 const nx = dx / len,
                   ny = dy / len,
                   r = 13;
+                const isSel = e.source === selectedId || e.target === selectedId;
+                const isDimEdge = focusedIds?.length > 0 && !isSel &&
+                  !focusedIds.includes(e.source) && !focusedIds.includes(e.target);
                 return (
                   <line
                     key={e.id}
@@ -248,7 +258,7 @@ export function ClusterGraph({
                     y2={t.y - ny * (r + 4)}
                     stroke={cl.color}
                     strokeWidth={0.8}
-                    strokeOpacity={0.45}
+                    strokeOpacity={isDimEdge ? 0.06 : 0.45}
                     strokeDasharray={e.isType ? '3 2' : undefined}
                     markerEnd="url(#carr)"
                   />
@@ -278,7 +288,7 @@ export function ClusterGraph({
                    linkedIds.size > 0 && allMembers.some((n) => linkedIds.has(n.id));
                  const hasFocused = focusedIds?.length > 0;
                  const clusterFocused = hasFocused && allMembers.some((n) => focusedIds.includes(n.id));
-                 const isClusterGreyed = 
+                 const isClusterGreyed =
                    (hasFocused && !clusterFocused && !clusterLinked) ||
                    (!hasFocused && visibleMembers.length === 0 && !clusterLinked);
                 const isLinkedCollapsed = clusterLinked && !isExpanded;
@@ -290,10 +300,11 @@ export function ClusterGraph({
                     }}
                     style={{ cursor: 'pointer' }}
                     filter={
-                      isExpanded ? 'url(#cglow)' : isLinkedCollapsed ? 'url(#cglow)' : undefined
+                      noGlow ? undefined : isExpanded ? 'url(#cglow)' : isLinkedCollapsed ? 'url(#cglow)' : undefined
                     }
                     opacity={isClusterGreyed ? 0.18 : 1}
                   >
+                    <title>{cl.name} — {allMembers.length} file{allMembers.length !== 1 ? 's' : ''}</title>
                     <circle
                       r={r}
                       fill={isLinkedCollapsed ? `${cl.color}18` : `${cl.color}10`}
@@ -371,12 +382,13 @@ export function ClusterGraph({
                         if (!isDrag()) onSelectNode(n.id);
                       }}
                       style={{ cursor: 'pointer' }}
-                      filter={isSel ? 'url(#nglow)' : undefined}
+                      filter={noGlow ? undefined : isSel ? 'url(#nglow)' : undefined}
                       opacity={isGreyed ? 0.18 : 1}
                     >
+                      <title>{n.label}{n.path ? `\n${n.path}` : ''}</title>
                       <circle
                         r={13}
-                        fill={isSel ? `${col}1a` : '#0b0d1e'}
+                        fill={isSel ? `${col}1a` : 'var(--bg-node)'}
                         stroke={isSel ? col : isAff ? col : cl.color}
                         strokeWidth={isSel ? 2 : 0.8}
                         strokeOpacity={isSel ? 1 : isAff ? 0.9 : 0.45}
@@ -385,7 +397,7 @@ export function ClusterGraph({
                         textAnchor="middle"
                         dominantBaseline="middle"
                         fontSize={6}
-                        fill={isSel ? '#fff' : '#5a6090'}
+                        fill={isSel ? 'var(--tx-node-sel)' : 'var(--tx-node)'}
                         fontFamily="'JetBrains Mono',monospace"
                         style={{ pointerEvents: 'none' }}
                       >
@@ -406,10 +418,10 @@ export function ClusterGraph({
             style={{
               fontSize: 8,
               padding: '2px 6px',
-              background: '#0d0f22',
-              border: `1px solid ${transform.x !== 0 || transform.y !== 0 || transform.k !== 1 ? '#7c6af7' : '#1a1f38'}`,
+              background: 'var(--bg-input)',
+              border: `1px solid ${transform.x !== 0 || transform.y !== 0 || transform.k !== 1 ? 'var(--ac-primary)' : 'var(--bd-muted)'}`,
               borderRadius: 4,
-              color: transform.x !== 0 || transform.y !== 0 || transform.k !== 1 ? '#7c6af7' : '#2a2f4a',
+              color: transform.x !== 0 || transform.y !== 0 || transform.k !== 1 ? 'var(--ac-primary)' : 'var(--tx-faint)',
               cursor: 'pointer',
               fontFamily: "'JetBrains Mono',monospace",
               letterSpacing: '0.05em',
@@ -423,10 +435,10 @@ export function ClusterGraph({
             style={{
               fontSize: 8,
               padding: '2px 6px',
-              background: '#0d0f22',
-              border: `1px solid ${hasSelection ? '#7c6af7' : '#1a1f38'}`,
+              background: 'var(--bg-input)',
+              border: `1px solid ${hasSelection ? 'var(--ac-primary)' : 'var(--bd-muted)'}`,
               borderRadius: 4,
-              color: hasSelection ? '#7c6af7' : '#2a2f4a',
+              color: hasSelection ? 'var(--ac-primary)' : 'var(--tx-faint)',
               cursor: hasSelection ? 'pointer' : 'default',
               fontFamily: "'JetBrains Mono',monospace",
               letterSpacing: '0.05em',

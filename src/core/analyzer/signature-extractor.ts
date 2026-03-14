@@ -13,7 +13,7 @@
 // ============================================================================
 
 export interface ExtractedSignature {
-  kind: 'class' | 'function' | 'method' | 'interface' | 'type';
+  kind: 'class' | 'function' | 'method' | 'interface' | 'type' | 'const';
   name: string;
   signature: string;   // compact one-liner
   docstring?: string;  // first meaningful line of doc comment
@@ -141,6 +141,22 @@ function extractPython(content: string): ExtractedSignature[] {
       continue;
     }
 
+    // Module-level ALL_CAPS constants (PEP 8 convention), only at indent 0 and outside class
+    const constMatch = indent === 0 && !currentClass
+      ? trimmed.match(/^([A-Z][A-Z0-9_]{1,})\s*(?::\s*[\w[\], |]+)?\s*=/)
+      : null;
+    if (constMatch) {
+      const name = constMatch[1];
+      const sig = trimmed.slice(0, 80).replace(/\s+/g, ' ');
+      // Use preceding # comment as docstring
+      const comment = lines[i - 1]?.trim().startsWith('#')
+        ? lines[i - 1].trim().slice(1).trim()
+        : undefined;
+      entries.push({ kind: 'const', name, signature: sig, docstring: comment });
+      pendingDecorator = undefined;
+      continue;
+    }
+
     // Reset decorator if line is neither decorator nor def/class
     if (trimmed && !trimmed.startsWith('#')) {
       pendingDecorator = undefined;
@@ -221,6 +237,14 @@ function extractTypeScript(content: string): ExtractedSignature[] {
     const arrowMatch = trimmed.match(/^export\s+const\s+(\w+)(?:\s*:\s*[\w<>[\], |&]+)?\s*=\s*(?:async\s+)?\(/);
     if (arrowMatch) {
       entries.push({ kind: 'function', name: arrowMatch[1], signature: `export const ${arrowMatch[1]} = (...)`, docstring: jsDoc });
+      continue;
+    }
+
+    // export const FOO = { ... } / [...] / primitive — objects, arrays, config constants
+    const constMatch = trimmed.match(/^export\s+const\s+(\w+)/);
+    if (constMatch) {
+      const sig = trimmed.slice(0, 80).replace(/\s+/g, ' ');
+      entries.push({ kind: 'const', name: constMatch[1], signature: sig, docstring: jsDoc });
       continue;
     }
 

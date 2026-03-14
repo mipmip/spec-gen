@@ -14,6 +14,23 @@ export const CLUSTER_PALETTE = [
   '#ffb347',
 ];
 
+/** Darker variant of CLUSTER_PALETTE for light backgrounds — same hues, lower luminance. */
+export const CLUSTER_PALETTE_LIGHT = [
+  '#4a34d4',
+  '#0e8f8f',
+  '#c0412a',
+  '#1a9e50',
+  '#c08010',
+  '#b82090',
+  '#1a6ec0',
+  '#6e9800',
+  '#b05010',
+  '#4040c0',
+  '#c01060',
+  '#007a60',
+  '#b07000',
+];
+
 export const EXT_COLOR = {
   '.ts': '#4ecdc4',
   '.tsx': '#3ecfcf',
