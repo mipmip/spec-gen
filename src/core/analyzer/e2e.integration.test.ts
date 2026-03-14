@@ -53,45 +53,136 @@ async function isServerUp(baseUrl: string): Promise<boolean> {
 // in the top-5 results.  Derived from manual inspection of the codebase.
 // ============================================================================
 
+// Hard queries — CANNOT be answered by matching on function name or file path alone.
+// The correct file is only discoverable via docstring or body content.
+// Each entry documents WHY a name-only matcher would fail.
 const KNOWN_QUERIES: Array<{
   query: string;
   mustInclude: string[];   // relative file paths that must appear in top-5
   description: string;
+  nameMatchWouldFail: string;
 }> = [
+
+  // ── Hard: opaque names, purpose only in docstring ──────────────────────────
+
   {
-    query: 'build vector index from call graph nodes and embed functions',
+    // rrfScore() — name is an IR acronym, reveals nothing to a non-specialist.
+    // Docstring: "Reciprocal Rank Fusion: merges two ranked lists into a single relevance score."
+    query: 'merge dense embedding ranking and sparse keyword ranking into a single score',
     mustInclude: ['src/core/analyzer/vector-index.ts'],
-    description: 'VectorIndex.build — core embedding pipeline',
+    description: 'rrfScore — Reciprocal Rank Fusion (opaque acronym name)',
+    nameMatchWouldFail: '"rrfScore" gives no hint of "merge ranked lists" or "hybrid search"',
   },
   {
-    query: 'read spec-gen configuration file from project root',
-    mustInclude: ['src/core/services/config-manager.ts'],
-    description: 'readSpecGenConfig — config loading hub',
+    // astChunkContent() — name hints at "chunk", but hides the key behaviour:
+    // "Falls back to blank-line chunking" and "prefixes each chunk with the import block."
+    // Docstring: "Chunk content at real AST declaration boundaries using tree-sitter.
+    //  Each chunk after the first is prefixed with the file's imports block."
+    query: 'split code at class and function declaration boundaries then prepend import header to each chunk',
+    mustInclude: ['src/core/analyzer/ast-chunker.ts'],
+    description: 'astChunkContent — AST boundary chunking with import header replication',
+    nameMatchWouldFail: '"astChunkContent" doesn\'t reveal "prepend imports" or "tree-sitter fallback"',
   },
   {
-    query: 'parse TypeScript Python Go Rust Ruby class method signatures regex multi-language',
-    mustInclude: ['src/core/analyzer/signature-extractor.ts'],
-    description: 'signature extractor — multi-language signature parsing',
+    // generateCodebaseDigest() — "digest" is vague. Purpose: generate a compact
+    // agent-readable CODEBASE.md designed to be included in CLAUDE.md so agents
+    // absorb architectural context passively at session start.
+    // Module JSDoc: "Designed to be included in CLAUDE.md / .clinerules so agents
+    //  absorb architectural context passively at session start, without needing to call any MCP tool."
+    query: 'produce compact agent-readable CODEBASE.md included in CLAUDE.md for passive architectural context at session start',
+    mustInclude: ['src/core/analyzer/codebase-digest.ts'],
+    description: 'generateCodebaseDigest — agent-readable CODEBASE.md generator',
+    nameMatchWouldFail: '"digest" reveals nothing about agent integration, CLAUDE.md, or passive context loading',
   },
   {
-    query: 'detect duplicate code clones structural exact near',
-    mustInclude: ['src/core/analyzer/duplicate-detector.ts'],
-    description: 'duplicate detector — clone detection',
-  },
-  {
-    query: 'generate OpenSpec specification from LLM pipeline stages',
+    // semanticFiles() — private method name reveals nothing. Key behaviour documented in JSDoc:
+    // "Generation retrieval strategy: semantic-first → graph expansion.
+    //  1. Semantic search identifies seed files relevant to the query.
+    //  2. Graph expansion (depth-1 callees) adds files called by the seed functions."
+    // The phrase "Generation retrieval strategy" only appears in this docstring and
+    // is specific enough to distinguish it from the MCP semantic search handlers.
+    query: 'generation retrieval strategy semantic-first followed by graph expansion depth-1 callees for indirect implementations',
     mustInclude: ['src/core/generator/spec-pipeline.ts'],
-    description: 'SpecGenerationPipeline — orchestrator',
+    description: 'semanticFiles — semantic seed + depth-1 callee expansion',
+    nameMatchWouldFail: '"semanticFiles" doesn\'t hint at graph expansion or that this is a generation retrieval strategy',
   },
   {
-    query: 'semantic search over embedded function vectors hybrid BM25',
+    // resolveProviderConfig() — generic name. Key content: 5-tier priority
+    // cascade (Gemini > Anthropic > OpenAI-compat URL > config file > OpenAI key).
+    // Docstring comment at module level enumerates the exact priority order.
+    query: 'pick LLM provider by checking Gemini key then Anthropic then OpenAI compatible base URL then config file',
+    mustInclude: ['src/core/services/chat-agent.ts'],
+    description: 'resolveProviderConfig — 5-tier provider priority cascade',
+    nameMatchWouldFail: '"resolveProviderConfig" gives no hint of priority order or which keys override which',
+  },
+  {
+    // compositeScore() — minimal name. Content: weighted blend of semantic
+    // distance and structural role bonus (hub/entry/orchestrator get a boost).
+    // Docstring: "Composite score = semantic * INSERTION_SEMANTIC_WEIGHT + structuralBonus * INSERTION_STRUCTURAL_WEIGHT"
+    query: 'blend semantic distance with structural role bonus to rank function insertion points',
+    mustInclude: ['src/core/services/mcp-handlers/semantic.ts'],
+    description: 'compositeScore — semantic + structural weighted ranking',
+    nameMatchWouldFail: '"compositeScore" doesn\'t reveal the dual-signal weighting or role bonuses',
+  },
+  {
+    // getSkeletonContent() — sounds like "extract function body". Real purpose:
+    // strip logs, inline comments, and non-JSDoc blocks while preserving control
+    // flow, calls, variable names, and return/throw statements.
+    // Docstring: "Strip implementation noise from source code."
+    query: 'strip logging statements and inline comments while keeping control flow and function calls for LLM embedding',
+    mustInclude: ['src/core/analyzer/code-shaper.ts'],
+    description: 'getSkeletonContent — noise stripping for LLM context',
+    nameMatchWouldFail: '"getSkeletonContent" doesn\'t reveal noise removal, log stripping, or JSDoc preservation',
+  },
+  {
+    // isSkeletonWorthIncluding() — meta predicate. Content: 20% reduction
+    // threshold heuristic — only include skeleton if it saves ≥20% tokens.
+    // Docstring: "Returns true when the skeleton achieves a meaningful size
+    //  reduction (at least 20% smaller than the original)."
+    query: 'decide whether stripped code skeleton saves enough tokens to justify including it over raw body',
+    mustInclude: ['src/core/analyzer/code-shaper.ts'],
+    description: 'isSkeletonWorthIncluding — 20% token reduction heuristic',
+    nameMatchWouldFail: 'name sounds like a simple boolean check; the 20% threshold is invisible without the docstring',
+  },
+
+  // ── Medium: name gives partial hint but query tests body/docstring content ──
+
+  {
+    // VectorIndex.build() incremental path — "build" is generic but the
+    // incremental caching behaviour (text-hash cache, Array.from conversion
+    // for Arrow typed arrays) is only in the body.
+    query: 'cache embedding vectors by text hash to skip re-embedding unchanged functions on subsequent runs',
     mustInclude: ['src/core/analyzer/vector-index.ts'],
-    description: 'VectorIndex.search — hybrid retrieval',
+    description: 'VectorIndex.build — incremental cache by text hash',
+    nameMatchWouldFail: '"build" doesn\'t suggest caching, text hashing, or Arrow typed array conversion',
   },
   {
-    query: 'validate MCP tool directory argument',
-    mustInclude: ['src/core/services/mcp-handlers/utils.ts'],
-    description: 'validateDirectory — MCP guard',
+    // buildGraphPromptSection() — sounds like prompt building, but the key
+    // semantic: "represent large file as call graph topology to reduce tokens
+    // instead of including full source". Returns null to signal chunking fallback.
+    query: 'represent oversized file as call graph topology to avoid including full source in LLM prompt',
+    mustInclude: ['src/core/analyzer/subgraph-extractor.ts'],
+    description: 'buildGraphPromptSection — topology substitution for large files',
+    nameMatchWouldFail: '"buildGraphPromptSection" doesn\'t reveal token reduction or the null-as-fallback-signal pattern',
+  },
+  {
+    // Duplicate detection — Jaccard similarity for near-clone (Type 3) detection.
+    // The threshold (0.7) and algorithm name only appear in docstring/body.
+    query: 'measure token overlap between two functions using Jaccard similarity to find near-duplicate code',
+    mustInclude: ['src/core/analyzer/duplicate-detector.ts'],
+    description: 'duplicate detector — Jaccard similarity for Type 3 near-clones',
+    nameMatchWouldFail: 'file name says "duplicate" but Jaccard/Type-3 only appear in body — a simpler test would miss the algorithm',
+  },
+  {
+    // Significance scorer — ranks files for LLM context inclusion. Key content:
+    // combines connectivity (importedBy count), name-based score, and path-based score.
+    // The `buildFileRelationships` function docstring: "Build file relationships from import analysis"
+    // `SignificanceScorer.setRelationships`: "Set file relationships for connectivity scoring"
+    // None of this is guessable from the name "SignificanceScorer".
+    query: 'score files by import connectivity relationships and path patterns to rank which files matter most',
+    mustInclude: ['src/core/analyzer/significance-scorer.ts'],
+    description: 'significance scorer — import connectivity + path-based ranking',
+    nameMatchWouldFail: '"significance" is vague; the connectivity + path combo is only in the docstrings',
   },
 ];
 
@@ -183,7 +274,7 @@ describe('RIG-17 — e2e pipeline on real spec-gen codebase', () => {
     it(`query: "${description}"`, async () => {
       if (skipIfNotReady(description)) return;
 
-      const results = await VectorIndex.search(INDEX_DIR, query, embedSvc, 5);
+      const results = await VectorIndex.search(INDEX_DIR, query, embedSvc, { limit: 5 });
       const returnedPaths = results.map(r => r.record.filePath);
 
       for (const expected of mustInclude) {
@@ -200,7 +291,7 @@ describe('RIG-17 — e2e pipeline on real spec-gen codebase', () => {
   it('search results have valid scores and required fields', async () => {
     if (skipIfNotReady('result quality')) return;
 
-    const results = await VectorIndex.search(INDEX_DIR, 'parse call graph from source files', embedSvc, 5);
+    const results = await VectorIndex.search(INDEX_DIR, 'parse call graph from source files', embedSvc, { limit: 5 });
     expect(results.length).toBeGreaterThan(0);
 
     for (const { record, score } of results) {
