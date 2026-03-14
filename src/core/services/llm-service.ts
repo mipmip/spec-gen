@@ -1206,6 +1206,13 @@ export class LLMService {
       jsonRequest.systemPrompt += '\n\nRespond with valid JSON only.';
     }
 
+    // When a schema is provided, append it to the system prompt so the model
+    // knows the exact shape expected (especially that it must start an array).
+    // This addresses issue #26: without this, models may return a single object.
+    if (schema) {
+      jsonRequest.systemPrompt += `\n\nYour response MUST conform to this JSON Schema:\n${JSON.stringify(schema)}`;
+    }
+
     const response = await this.complete(jsonRequest);
     let content = response.content;
 

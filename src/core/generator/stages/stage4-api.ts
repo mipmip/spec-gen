@@ -8,6 +8,7 @@ import logger from '../../../utils/logger.js';
 import { STAGE4_MAX_TOKENS, STAGE_CHUNK_MAX_CHARS } from '../../../constants.js';
 import { PROMPTS } from '../prompts.js';
 import type { ExtractedEndpoint, StageResult, PipelineContext } from '../../../types/pipeline.js';
+import { STAGE4_ENDPOINT_SCHEMA } from '../schemas.js';
 
 export async function runStage4(
   pipeline: PipelineContext,
@@ -39,7 +40,7 @@ export async function runStage4(
           userPrompt,
           temperature: 0.3,
           maxTokens: STAGE4_MAX_TOKENS,
-        });
+        }, STAGE4_ENDPOINT_SCHEMA);
         // Normalize: LLM may return a single object instead of an array
         const endpoints = Array.isArray(result) ? result : [result];
         for (const endpoint of endpoints) {

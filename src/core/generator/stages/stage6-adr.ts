@@ -7,6 +7,7 @@
 import { STAGE6_MAX_TOKENS } from '../../../constants.js';
 import { PROMPTS } from '../prompts.js';
 import type { ArchitectureSynthesis, EnrichedADR, PipelineContext, StageResult } from '../../../types/pipeline.js';
+import { STAGE6_ADR_SCHEMA } from '../schemas.js';
 
 export async function runStage6(
   pipeline: PipelineContext,
@@ -24,7 +25,7 @@ ${architecture.keyDecisions.map((d, i) => `${i + 1}. ${d}`).join('\n')}`;
       userPrompt,
       temperature: 0.3,
       maxTokens: STAGE6_MAX_TOKENS,
-    });
+    }, STAGE6_ADR_SCHEMA);
 
     // Normalize: completeJSON may return a single object if the LLM ignores the
     // array instruction (observed with GPT-5.2-chat — see issue #26). Wrap it

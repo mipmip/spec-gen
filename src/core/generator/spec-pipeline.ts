@@ -23,6 +23,7 @@ import { runStage4 } from './stages/stage4-api.js';
 import { runStage5 } from './stages/stage5-architecture.js';
 import { runStage6 } from './stages/stage6-adr.js';
 import { PROMPTS } from './prompts.js';
+import { SUBSPEC_SCHEMA } from './schemas.js';
 import type {
   ProjectSurveyResult,
   ExtractedEntity,
@@ -424,7 +425,7 @@ export class SpecGenerationPipeline implements PipelineContext {
         userPrompt: PROMPTS.stage3_subspec(parentName, parentPurpose, calleeInfos),
         temperature: 0.3,
         maxTokens: 4000,
-      });
+      }, SUBSPEC_SCHEMA);
       if (Array.isArray(result)) {
         // Ensure callee field is set — LLM sometimes names it differently
         for (const sub of result) {
