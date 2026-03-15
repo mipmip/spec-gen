@@ -30,6 +30,7 @@ import {
   handleGetCriticalHubs,
   handleGetGodFunctions,
   handleGetFileDependencies,
+  handleTraceExecutionPath,
 } from './graph.js';
 import { readCachedContext } from './utils.js';
 import type { FunctionNode, SerializedCallGraph, CallEdge } from '../../analyzer/call-graph.js';
@@ -382,5 +383,117 @@ describe('handler error paths — no cached context', () => {
     // readCachedContext not involved here; it reads a JSON file directly
     const result = await handleGetFileDependencies('/tmp/proj', 'src/foo.ts') as { error: string };
     expect(result.error).toContain('No dependency graph found');
+  });
+
+  it('handleTraceExecutionPath returns error when no context', async () => {
+    vi.mocked(readCachedContext).mockResolvedValue(null);
+    const result = await handleTraceExecutionPath('/tmp/proj', 'foo', 'bar') as { error: string };
+    expect(result.error).toContain('No analysis found');
+  });
+});
+
+// ============================================================================
+// handleTraceExecutionPath — path finding logic
+// ============================================================================
+
+describe('handleTraceExecutionPath', () => {
+  it('finds the shortest direct path between two functions', async () => {
+    const nodes = [
+      makeNode({ id: 'a.ts::processOrder', fanOut: 1 }),
+      makeNode({ id: 'b.ts::applyDiscounts', fanOut: 1 }),
+      makeNode({ id: 'c.ts::chargeCard', fanOut: 0 }),
+    ];
+    const edges = [
+      makeEdge('a.ts::processOrder', 'b.ts::applyDiscounts'),
+      makeEdge('b.ts::applyDiscounts', 'c.ts::chargeCard'),
+    ];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, edges) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'processOrder', 'chargeCard') as {
+      pathsFound: number;
+      shortestPath: string;
+      paths: Array<{ hops: number; chain: string }>;
+    };
+
+    expect(result.pathsFound).toBe(1);
+    expect(result.paths[0].hops).toBe(2);
+    expect(result.paths[0].chain).toBe('processOrder → applyDiscounts → chargeCard');
+  });
+
+  it('returns multiple paths ordered by length (shortest first)', async () => {
+    // A → B → D  (2 hops)
+    // A → C → D  (2 hops)
+    const nodes = [
+      makeNode({ id: 'f.ts::A', fanOut: 2 }),
+      makeNode({ id: 'f.ts::B', fanOut: 1 }),
+      makeNode({ id: 'f.ts::C', fanOut: 1 }),
+      makeNode({ id: 'f.ts::D', fanOut: 0 }),
+    ];
+    const edges = [
+      makeEdge('f.ts::A', 'f.ts::B'),
+      makeEdge('f.ts::A', 'f.ts::C'),
+      makeEdge('f.ts::B', 'f.ts::D'),
+      makeEdge('f.ts::C', 'f.ts::D'),
+    ];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, edges) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'A', 'D') as {
+      pathsFound: number;
+      paths: Array<{ hops: number }>;
+    };
+
+    expect(result.pathsFound).toBe(2);
+    expect(result.paths.every(p => p.hops === 2)).toBe(true);
+  });
+
+  it('returns pathsFound: 0 with a hint when no path exists', async () => {
+    const nodes = [
+      makeNode({ id: 'f.ts::isolated', fanOut: 0 }),
+      makeNode({ id: 'f.ts::other', fanOut: 0 }),
+    ];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, []) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'isolated', 'other') as {
+      pathsFound: number;
+      hint: string;
+    };
+
+    expect(result.pathsFound).toBe(0);
+    expect(result.hint).toBeDefined();
+  });
+
+  it('returns error when entry function is not found', async () => {
+    const nodes = [makeNode({ id: 'f.ts::known', fanOut: 0 })];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, []) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'ghost', 'known') as { error: string };
+    expect(result.error).toContain('"ghost"');
+  });
+
+  it('returns error when target function is not found', async () => {
+    const nodes = [makeNode({ id: 'f.ts::known', fanOut: 0 })];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, []) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'known', 'ghost') as { error: string };
+    expect(result.error).toContain('"ghost"');
+  });
+
+  it('respects maxDepth and does not return paths longer than the limit', async () => {
+    // A → B → C → D (3 hops) — should be excluded when maxDepth=2
+    const nodes = [
+      makeNode({ id: 'f.ts::A', fanOut: 1 }),
+      makeNode({ id: 'f.ts::B', fanOut: 1 }),
+      makeNode({ id: 'f.ts::C', fanOut: 1 }),
+      makeNode({ id: 'f.ts::D', fanOut: 0 }),
+    ];
+    const edges = [
+      makeEdge('f.ts::A', 'f.ts::B'),
+      makeEdge('f.ts::B', 'f.ts::C'),
+      makeEdge('f.ts::C', 'f.ts::D'),
+    ];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, edges) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'A', 'D', 2) as { pathsFound: number };
+    expect(result.pathsFound).toBe(0);
   });
 });

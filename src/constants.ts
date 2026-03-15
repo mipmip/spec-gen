@@ -320,6 +320,12 @@ export const SUBGRAPH_DEFAULT_MAX_DEPTH = 3;
 /** Maximum allowed subgraph traversal depth */
 export const SUBGRAPH_MAX_DEPTH_LIMIT = 20;
 
+/** Default max depth for trace_execution_path BFS */
+export const TRACE_PATH_DEFAULT_MAX_DEPTH = 6;
+
+/** Maximum number of paths returned by trace_execution_path */
+export const TRACE_PATH_MAX_PATHS = 10;
+
 /** Criticality score weight for fan-in */
 export const CRITICALITY_FAN_IN_WEIGHT = 3;
 

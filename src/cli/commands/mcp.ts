@@ -36,6 +36,7 @@ import {
   handleGetCriticalHubs,
   handleGetGodFunctions,
   handleGetFileDependencies,
+  handleTraceExecutionPath,
 } from '../../core/services/mcp-handlers/graph.js';
 import {
   handleSearchCode,
@@ -70,6 +71,8 @@ export {
   handleGetLeafFunctions,
   handleGetCriticalHubs,
   handleGetGodFunctions,
+  handleGetFileDependencies,
+  handleTraceExecutionPath,
   handleSearchCode,
   handleSuggestInsertionPoints,
   handleSearchSpecs,
@@ -268,6 +271,41 @@ export const TOOL_DEFINITIONS = [
         },
       },
       required: ['directory', 'functionName'],
+    },
+  },
+  {
+    name: 'trace_execution_path',
+    description:
+      'USE THIS WHEN debugging: "how does request X reach function Y?", ' +
+      '"which call chain produced this error?", "is there a path from A to B?". ' +
+      'Finds all execution paths between two functions in the call graph (BFS/DFS, ' +
+      'shortest first). Complementary to get_subgraph — use get_subgraph for ' +
+      'neighbourhood exploration, trace_execution_path for point-to-point tracing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Absolute path to the project directory',
+        },
+        entryFunction: {
+          type: 'string',
+          description: 'Starting function name (exact or partial match)',
+        },
+        targetFunction: {
+          type: 'string',
+          description: 'Target function name (exact or partial match)',
+        },
+        maxDepth: {
+          type: 'number',
+          description: 'Maximum path length in hops (default: 6)',
+        },
+        maxPaths: {
+          type: 'number',
+          description: 'Maximum number of paths to return (default: 10, max: 50)',
+        },
+      },
+      required: ['directory', 'entryFunction', 'targetFunction'],
     },
   },
   {
@@ -766,6 +804,10 @@ async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
         const { directory, functionName, direction = 'downstream', maxDepth = 3, format = 'json' } =
           args as { directory: string; functionName: string; direction?: 'downstream' | 'upstream' | 'both'; maxDepth?: number; format?: 'json' | 'mermaid' };
         result = await handleGetSubgraph(directory, functionName, direction, maxDepth, format);
+      } else if (name === 'trace_execution_path') {
+        const { directory, entryFunction, targetFunction, maxDepth = 6, maxPaths = 10 } =
+          args as { directory: string; entryFunction: string; targetFunction: string; maxDepth?: number; maxPaths?: number };
+        result = await handleTraceExecutionPath(directory, entryFunction, targetFunction, maxDepth, maxPaths);
       } else if (name === 'get_mapping') {
         const { directory, domain, orphansOnly } = args as { directory: string; domain?: string; orphansOnly?: boolean };
         result = await handleGetMapping(directory, domain, orphansOnly);

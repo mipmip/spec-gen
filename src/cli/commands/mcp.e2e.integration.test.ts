@@ -209,6 +209,7 @@ describe('RIG-19 — MCP e2e integration on real spec-gen codebase', () => {
       'get_call_graph', 'get_signatures', 'get_architecture_overview',
       'get_subgraph', 'get_critical_hubs', 'get_file_dependencies',
       'search_code', 'orient', 'get_function_skeleton', 'get_spec',
+      'trace_execution_path',
     ];
     for (const name of required) {
       expect(names.has(name), `Missing tool: ${name}`).toBe(true);
@@ -930,6 +931,89 @@ describe('RIG-19 — MCP e2e integration on real spec-gen codebase', () => {
       expect(typeof r.text).toBe('string');
       expect(typeof r.score).toBe('number');
     }
+  });
+
+  // --------------------------------------------------------------------------
+  // trace_execution_path — point-to-point call graph path finder
+  //
+  // Uses a known 4-hop path in spec-gen itself:
+  //   specGenRun → run → runStage3 → astChunkContent → detectLanguage
+  // --------------------------------------------------------------------------
+
+  it('trace_execution_path finds known 4-hop path from specGenRun to detectLanguage', async () => {
+    if (skip('trace_execution_path')) return;
+
+    const resp = await client.callTool('trace_execution_path', {
+      directory:      REPO_ROOT,
+      entryFunction:  'specGenRun',
+      targetFunction: 'detectLanguage',
+      maxDepth:       6,
+      maxPaths:       10,
+    });
+    const data = client.parseToolResult(resp) as {
+      entryFunction:  string;
+      targetFunction: string;
+      pathsFound:     number;
+      maxDepth:       number;
+      shortestPath:   string;
+      paths: Array<{
+        hops:  number;
+        chain: string;
+        steps: Array<{ name: string; file: string; className: string | null }>;
+      }>;
+    };
+
+    expect(data.entryFunction).toBe('specGenRun');
+    expect(data.targetFunction).toBe('detectLanguage');
+    expect(data.pathsFound).toBeGreaterThan(0);
+    expect(data.maxDepth).toBe(6);
+
+    // Shortest path must end with detectLanguage
+    expect(data.shortestPath).toMatch(/detectLanguage$/);
+
+    // Known path must be ≤ 4 hops
+    expect(data.paths[0].hops).toBeLessThanOrEqual(4);
+
+    // Paths are ordered by hops ascending (shortest first)
+    for (let i = 1; i < data.paths.length; i++) {
+      expect(data.paths[i].hops).toBeGreaterThanOrEqual(data.paths[i - 1].hops);
+    }
+
+    // Each path has valid step objects
+    for (const path of data.paths) {
+      expect(typeof path.hops).toBe('number');
+      expect(path.hops).toBeGreaterThan(0);
+      expect(typeof path.chain).toBe('string');
+      expect(path.steps.length).toBe(path.hops + 1);
+      for (const step of path.steps) {
+        expect(typeof step.name).toBe('string');
+        expect(step.name.length).toBeGreaterThan(0);
+        expect(typeof step.file).toBe('string');
+      }
+      // First step is always the entry, last is always the target
+      expect(path.steps[0].name).toBe('specGenRun');
+      expect(path.steps[path.steps.length - 1].name).toBe('detectLanguage');
+    }
+  });
+
+  it('trace_execution_path returns pathsFound: 0 with hint for disconnected functions', async () => {
+    if (skip('trace_execution_path — no path')) return;
+
+    // validateDirectory has fanIn=24 but fanOut=0 — nothing downstream from it
+    const resp = await client.callTool('trace_execution_path', {
+      directory:      REPO_ROOT,
+      entryFunction:  'validateDirectory',
+      targetFunction: 'startMcpServer',   // reverse direction — unreachable
+      maxDepth:       3,
+    });
+    const data = client.parseToolResult(resp) as {
+      pathsFound: number;
+      hint?:      string;
+      message?:   string;
+    };
+
+    expect(data.pathsFound).toBe(0);
+    expect(data.hint ?? data.message).toBeTruthy();
   });
 
   // --------------------------------------------------------------------------

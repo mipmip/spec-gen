@@ -18,6 +18,7 @@ import {
   handleGetCriticalHubs,
   handleGetGodFunctions,
   handleGetFileDependencies,
+  handleTraceExecutionPath,
 } from './mcp-handlers/graph.js';
 
 import {
@@ -198,6 +199,37 @@ export const CHAT_TOOLS: ChatTool[] = [
         (args.direction as 'downstream' | 'upstream' | 'both') ?? 'downstream',
         (args.maxDepth as number) ?? 3,
         'json'
+      );
+      return { result, filePaths: extractFilePaths(result) };
+    },
+  },
+
+  // ── Execution path tracing ───────────────────────────────────────────────
+  {
+    name: 'trace_execution_path',
+    description:
+      'USE THIS WHEN debugging: "how does request X reach function Y?", ' +
+      '"which call chain produced this error?", "is there a path from A to B?". ' +
+      'Returns all paths ordered by hop count. Complements get_subgraph (neighbourhood) ' +
+      'with point-to-point tracing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory:      { type: 'string', description: 'Absolute path to the project directory' },
+        entryFunction:  { type: 'string', description: 'Starting function name (exact or partial)' },
+        targetFunction: { type: 'string', description: 'Target function name (exact or partial)' },
+        maxDepth: { type: 'number', description: 'Max path length in hops (default: 6)' },
+        maxPaths: { type: 'number', description: 'Max paths returned (default: 10)' },
+      },
+      required: ['directory', 'entryFunction', 'targetFunction'],
+    },
+    async execute(directory, args) {
+      const result = await handleTraceExecutionPath(
+        (args.directory as string) ?? directory,
+        args.entryFunction as string,
+        args.targetFunction as string,
+        (args.maxDepth as number) ?? 6,
+        (args.maxPaths as number) ?? 10,
       );
       return { result, filePaths: extractFilePaths(result) };
     },
