@@ -533,10 +533,35 @@ Run `spec-gen doctor` whenever setup instructions aren't working — it tells yo
 
 ## Agent Setup
 
+### Passive context vs active tools
+
+Agents have two ways to acquire knowledge about your codebase:
+
+- **Passive (zero friction):** files referenced in `CLAUDE.md` / `.clinerules` are read automatically at session start, before the agent even processes your first message. No decision required, no tool call to make.
+- **Active (friction):** MCP tools must be consciously selected from a list, called, and their output integrated into context. Even when the information would help, agents often skip this step and read files directly instead — it's always the safe fallback.
+
+This means architectural context delivered passively is far more reliably absorbed than context behind a tool call. `spec-gen analyze` generates `.spec-gen/analysis/CODEBASE.md` specifically for this purpose: a compact, agent-optimized digest (~100 lines) that agents absorb at session start without any decision cost.
+
+### What CODEBASE.md contains
+
+Generated from the static analysis artifacts, it surfaces what an agent most needs before touching code:
+
+- **Entry points** — functions with no internal callers (where execution starts)
+- **Critical hubs** — highest fan-in functions (most risky to modify)
+- **Spec domains** — which `openspec/specs/` domains exist and what they cover
+- **Most coupled files** — high in-degree in the dependency graph (touch with care)
+- **God functions / oversized orchestrators** — complexity hotspots
+- **Layer violations** — if any
+
+This is structural signal, not prose. It complements `openspec/specs/overview/spec.md`, which provides the functional view (what the system does, what domains exist). Together they give agents both the architectural topology and the business intent.
+
+### Setup
+
 After running `spec-gen analyze`, add this to your project's `CLAUDE.md` or `.clinerules`:
 
 ```markdown
 @.spec-gen/analysis/CODEBASE.md
+@openspec/specs/overview/spec.md
 
 ## spec-gen MCP tools — when to use them
 
@@ -553,9 +578,11 @@ After running `spec-gen analyze`, add this to your project's `CLAUDE.md` or `.cl
 For all other cases (reading a file, grepping, listing files) use native tools directly.
 ```
 
-The `CODEBASE.md` reference gives the agent passive architectural context (entry points, hubs, spec domains) without any tool call. The table tells it when to switch to active MCP tools.
+`CODEBASE.md` gives the agent passive architectural context. `overview/spec.md` gives the functional domain map. The table tells it when the passive context isn't enough and an active MCP tool call is warranted.
 
 > **Tip:** `spec-gen analyze` prints this snippet after every run as a reminder.
+
+> **Note:** `.spec-gen/analysis/` is git-ignored — each developer generates it locally. Re-run `spec-gen analyze` after significant structural changes to keep the digest current.
 
 ---
 
