@@ -324,4 +324,27 @@ describe('handleSearchSpecs — success path', () => {
     const result = await handleSearchSpecs(tmpDir, 'auth') as { error: string };
     expect(result.error).toContain('No embedding configuration');
   });
+
+  it('returns error when cfg exists but fromConfig returns null', async () => {
+    // Create minimal .spec-gen/config.json so readSpecGenConfig returns a config
+    await mkdir(join(tmpDir, '.spec-gen'), { recursive: true });
+    await writeFile(join(tmpDir, '.spec-gen', 'config.json'), JSON.stringify({ version: '1' }), 'utf-8');
+
+    vi.doMock('../../analyzer/spec-vector-index.js', () => ({
+      SpecVectorIndex: {
+        exists: vi.fn().mockReturnValue(true),
+        search: vi.fn().mockResolvedValue([]),
+      },
+    }));
+    vi.doMock('../../analyzer/embedding-service.js', () => ({
+      EmbeddingService: {
+        fromEnv: vi.fn().mockImplementation(() => { throw new Error('no env'); }),
+        fromConfig: vi.fn().mockReturnValue(null),
+      },
+    }));
+
+    const { handleSearchSpecs } = await import('./semantic.js');
+    const result = await handleSearchSpecs(tmpDir, 'auth') as { error: string };
+    expect(result.error).toContain('No embedding configuration');
+  });
 });

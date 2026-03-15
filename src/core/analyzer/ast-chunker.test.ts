@@ -177,4 +177,67 @@ function doAll(x) { return x + 4; }
     const chunks = await astChunkContent(content, 'comments.ts', 100);
     expect(chunks.length).toBeGreaterThan(0);
   });
+
+  it('handles Go files with AST chunking', async () => {
+    const goContent = `package main
+
+import "fmt"
+
+func one(x int) int { return x + 1 }
+
+func two(x int) int { return x + 2 }
+
+func three(x int) int { return x + 3 }
+
+func four(x int) int { return x + 4 }
+
+func five(x int) int { fmt.Println(x); return x + 5 }
+`.repeat(3);
+    const chunks = await astChunkContent(goContent, 'main.go', 200);
+    expect(chunks.length).toBeGreaterThan(0);
+    const joined = chunks.join('\n');
+    expect(joined).toContain('func one');
+  });
+
+  it('handles Rust files with AST chunking', async () => {
+    const rustContent = `
+fn one(x: i32) -> i32 { x + 1 }
+
+fn two(x: i32) -> i32 { x + 2 }
+
+fn three(x: i32) -> i32 { x + 3 }
+
+fn four(x: i32) -> i32 { x + 4 }
+
+fn five(x: i32) -> i32 { x + 5 }
+`.repeat(3);
+    const chunks = await astChunkContent(rustContent, 'lib.rs', 200);
+    expect(chunks.length).toBeGreaterThan(0);
+    const joined = chunks.join('\n');
+    expect(joined).toContain('fn one');
+  });
+
+  it('handles Ruby files with AST chunking', async () => {
+    const rubyContent = `
+def one(x)
+  x + 1
+end
+
+def two(x)
+  x + 2
+end
+
+def three(x)
+  x + 3
+end
+
+def four(x)
+  x + 4
+end
+`.repeat(3);
+    const chunks = await astChunkContent(rubyContent, 'app.rb', 200);
+    expect(chunks.length).toBeGreaterThan(0);
+    const joined = chunks.join('\n');
+    expect(joined).toContain('def one');
+  });
 });
