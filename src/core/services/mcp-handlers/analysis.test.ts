@@ -462,3 +462,95 @@ describe('handleAnalyzeCodebase (cached path)', () => {
     expect(mockRunAnalysis).toHaveBeenCalledOnce();
   });
 });
+
+// ============================================================================
+// handleGetFunctionBody
+// ============================================================================
+
+describe('handleGetFunctionBody', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await createTmpDir();
+  });
+
+  it('returns error when file does not exist', async () => {
+    const { handleGetFunctionBody } = await import('./analysis.js');
+    const result = await handleGetFunctionBody(tmpDir, 'nonexistent.ts', 'myFn') as { error: string };
+    expect(result.error).toContain('File not found');
+  });
+
+  it('returns function body via line scan fallback when no call graph', async () => {
+    const src = `export function doSomething(x: number): number {\n  return x + 1;\n}\n`;
+    const srcPath = join(tmpDir, 'util.ts');
+    await writeFile(srcPath, src, 'utf-8');
+
+    const { handleGetFunctionBody } = await import('./analysis.js');
+    const result = await handleGetFunctionBody(tmpDir, 'util.ts', 'doSomething') as Record<string, unknown>;
+
+    expect(result.functionName).toBe('doSomething');
+    expect(result.filePath).toBe('util.ts');
+    expect(typeof result.body).toBe('string');
+    expect((result.body as string)).toContain('doSomething');
+    expect(result.note).toContain('line scan');
+  });
+
+  it('returns error when function not found in file', async () => {
+    const src = `export function otherFn() {}\n`;
+    await writeFile(join(tmpDir, 'a.ts'), src, 'utf-8');
+
+    const { handleGetFunctionBody } = await import('./analysis.js');
+    const result = await handleGetFunctionBody(tmpDir, 'a.ts', 'missingFn') as { error: string };
+    expect(result.error).toContain('"missingFn"');
+  });
+});
+
+// ============================================================================
+// handleGetDecisions
+// ============================================================================
+
+describe('handleGetDecisions', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await createTmpDir();
+  });
+
+  it('returns empty decisions when decisions directory does not exist', async () => {
+    const { handleGetDecisions } = await import('./analysis.js');
+    const result = await handleGetDecisions(tmpDir) as { decisions: unknown[]; note: string };
+    expect(result.decisions).toEqual([]);
+    expect(result.note).toContain('decisions');
+  });
+
+  it('returns list of ADR files from decisions directory', async () => {
+    const decisionsDir = join(tmpDir, 'openspec', 'decisions');
+    await mkdir(decisionsDir, { recursive: true });
+    await writeFile(
+      join(decisionsDir, 'adr-001-use-lancedb.md'),
+      '# Use LanceDB\n\n**Status**: Accepted\n\nWe chose LanceDB for vector storage.',
+      'utf-8'
+    );
+
+    const { handleGetDecisions } = await import('./analysis.js');
+    const result = await handleGetDecisions(tmpDir) as { count: number; decisions: Array<{ filename: string; title: string; status: string }> };
+
+    expect(result.count).toBe(1);
+    expect(result.decisions[0].filename).toBe('adr-001-use-lancedb.md');
+    expect(result.decisions[0].title).toBe('Use LanceDB');
+    expect(result.decisions[0].status).toBe('Accepted');
+  });
+
+  it('filters decisions by query text', async () => {
+    const decisionsDir = join(tmpDir, 'openspec', 'decisions');
+    await mkdir(decisionsDir, { recursive: true });
+    await writeFile(join(decisionsDir, 'adr-001.md'), '# Use LanceDB\n\n**Status**: Accepted\n\nVector storage.', 'utf-8');
+    await writeFile(join(decisionsDir, 'adr-002.md'), '# Use Vitest\n\n**Status**: Accepted\n\nTesting framework.', 'utf-8');
+
+    const { handleGetDecisions } = await import('./analysis.js');
+    const result = await handleGetDecisions(tmpDir, 'lancedb') as { count: number; decisions: unknown[] };
+
+    expect(result.count).toBe(1);
+    expect(result.decisions).toHaveLength(1);
+  });
+});

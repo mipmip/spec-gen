@@ -8,6 +8,7 @@ import logger from '../../../utils/logger.js';
 import { STAGE3_MAX_TOKENS, STAGE_CHUNK_MAX_CHARS } from '../../../constants.js';
 import { PROMPTS } from '../prompts.js';
 import type { ExtractedEntity, ExtractedService, StageResult, PipelineContext, ProjectSurveyResult } from '../../../types/pipeline.js';
+import { astChunkContent } from '../../analyzer/ast-chunker.js';
 import { STAGE3_SERVICE_SCHEMA } from '../schemas.js';
 
 export async function runStage3(
@@ -25,7 +26,7 @@ export async function runStage3(
 
   for (const [idx, file] of serviceFiles.entries()) {
     onFile?.(idx + 1, serviceFiles.length, file.path);
-    const chunks = pipeline.chunkContent(file.content, STAGE_CHUNK_MAX_CHARS);
+    const chunks = await astChunkContent(file.content, file.path, STAGE_CHUNK_MAX_CHARS);
     const isLargeFile = chunks.length > 1;
     const graphSection = pipeline.graphPromptFor(file.path, file.content);
 

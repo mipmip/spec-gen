@@ -8,6 +8,7 @@ import { createMockLLMService } from '../../services/llm-service.js';
 import type { ArchitectureSynthesis, ProjectSurveyResult, ExtractedEntity, ExtractedService, ExtractedEndpoint, PipelineContext } from '../../../types/pipeline.js';
 import type { DependencyGraphResult } from '../../analyzer/dependency-graph.js';
 import type { SerializedCallGraph } from '../../analyzer/call-graph.js';
+import type { RefactorReport } from '../../analyzer/refactor-analyzer.js';
 
 // ============================================================================
 // MOCKS
@@ -115,6 +116,8 @@ const MOCK_DEP_GRAPH: DependencyGraphResult = {
 const MOCK_CALL_GRAPH: SerializedCallGraph = {
   nodes: [],
   edges: [],
+  classes: [],
+  inheritanceEdges: [],
   hubFunctions: [
     { 
       id: 'node1', 
@@ -372,6 +375,95 @@ describe('Stage 5: Architecture Synthesis', () => {
       tokens: expect.any(Number),
       duration: expect.any(Number),
     });
+  });
+
+  it('includes structural issues in prompt when refactorReport has issues', async () => {
+    mockProvider.setDefaultResponse(JSON.stringify(MOCK_ARCHITECTURE_RESULT));
+
+    const refactorReport: RefactorReport = {
+      generatedAt: '2026-03-15T00:00:00Z',
+      stats: {
+        totalFunctions: 120,
+        withIssues: 15,
+        unreachable: 3,
+        highFanIn: 1,
+        highFanOut: 2,
+        cyclesDetected: 4,
+        cycleParticipants: 8,
+        srpViolations: 6,
+      },
+      priorities: [
+        { function: 'processAll', file: 'src/processor.ts', fanIn: 2, fanOut: 10, depth: 1, sccSize: 1, requirements: [], issues: ['high_fan_out', 'in_cycle'], priorityScore: 9 },
+        { function: 'handleData', file: 'src/handler.ts', fanIn: 1, fanOut: 3, depth: 2, sccSize: 1, requirements: [], issues: ['multi_requirement'], priorityScore: 7 },
+      ],
+      cycles: [
+        { sccId: 1, size: 3, participants: [
+          { function: 'a', file: 'src/a.ts' },
+          { function: 'b', file: 'src/b.ts' },
+          { function: 'c', file: 'src/c.ts' },
+        ]},
+      ],
+    };
+
+    await runStage5(
+      pipeline, MOCK_SURVEY, MOCK_ENTITIES, MOCK_SERVICES, MOCK_ENDPOINTS,
+      undefined, undefined, refactorReport
+    );
+
+    const userPrompt = mockProvider.callHistory[0].userPrompt;
+    expect(userPrompt).toContain('Structural Issues');
+    expect(userPrompt).toContain('120 functions');
+    expect(userPrompt).toContain('15 with issues');
+    expect(userPrompt).toContain('3 unreachable');
+    expect(userPrompt).toContain('2 god functions');
+    expect(userPrompt).toContain('4 dependency cycles');
+    expect(userPrompt).toContain('6 SRP violations');
+    expect(userPrompt).toContain('Top hotspots');
+    expect(userPrompt).toContain('processAll');
+    expect(userPrompt).toContain('src/processor.ts');
+    expect(userPrompt).toContain('high_fan_out, in_cycle');
+    expect(userPrompt).toContain('Dependency cycles');
+    expect(userPrompt).toContain('3 functions');
+    expect(userPrompt).toContain('a → b → c');
+  });
+
+  it('omits structural issues section when refactorReport has no issues', async () => {
+    mockProvider.setDefaultResponse(JSON.stringify(MOCK_ARCHITECTURE_RESULT));
+
+    const refactorReport: RefactorReport = {
+      generatedAt: '2026-03-15T00:00:00Z',
+      stats: {
+        totalFunctions: 50,
+        withIssues: 0,
+        unreachable: 0,
+        highFanIn: 0,
+        highFanOut: 0,
+        cyclesDetected: 0,
+        cycleParticipants: 0,
+        srpViolations: 0,
+      },
+      priorities: [],
+      cycles: [],
+    };
+
+    await runStage5(
+      pipeline, MOCK_SURVEY, MOCK_ENTITIES, MOCK_SERVICES, MOCK_ENDPOINTS,
+      undefined, undefined, refactorReport
+    );
+
+    const userPrompt = mockProvider.callHistory[0].userPrompt;
+    expect(userPrompt).not.toContain('Structural Issues');
+  });
+
+  it('omits structural issues section when refactorReport is undefined', async () => {
+    mockProvider.setDefaultResponse(JSON.stringify(MOCK_ARCHITECTURE_RESULT));
+
+    await runStage5(
+      pipeline, MOCK_SURVEY, MOCK_ENTITIES, MOCK_SERVICES, MOCK_ENDPOINTS
+    );
+
+    const userPrompt = mockProvider.callHistory[0].userPrompt;
+    expect(userPrompt).not.toContain('Structural Issues');
   });
 
   it('uses survey data to prompt correctly', async () => {

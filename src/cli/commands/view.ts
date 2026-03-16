@@ -161,6 +161,31 @@ export const viewCommand = new Command('view')
                 }
               });
 
+              devServer.middlewares.use('/api/class-graph', async (_req, res) => {
+                try {
+                  if (!(await fileExists(llmContextPath))) {
+                    res.statusCode = 404;
+                    res.end(JSON.stringify({ error: 'llm-context.json not found' }));
+                    return;
+                  }
+                  const raw = JSON.parse(await readFile(llmContextPath, 'utf-8')) as {
+                    callGraph?: { classes?: unknown[]; inheritanceEdges?: unknown[]; edges?: unknown[]; nodes?: unknown[] };
+                  };
+                  const cg = raw.callGraph ?? {};
+                  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                  res.statusCode = 200;
+                  res.end(JSON.stringify({
+                    classes:         cg.classes         ?? [],
+                    inheritanceEdges: cg.inheritanceEdges ?? [],
+                    edges:           cg.edges            ?? [],
+                    nodes:           cg.nodes            ?? [],
+                  }));
+                } catch (err) {
+                  res.statusCode = 500;
+                  res.end(JSON.stringify({ error: sanitizeErrorMessage((err as Error).message) }));
+                }
+              });
+
               devServer.middlewares.use('/api/refactor-priorities', async (_req, res) => {
                 try {
                   if (!(await fileExists(refactorPath))) {
@@ -459,11 +484,14 @@ export const viewCommand = new Command('view')
 
                   if (abortController.signal.aborted) return;
 
-                  const highlightIds = filePaths
-                    .map(p => pathToNodeId.get(normalise(p)))
-                    .filter((id): id is string => Boolean(id));
+                  const highlightIds: string[] = [];
+                  const highlightPaths: string[] = [];
+                  for (const p of filePaths) {
+                    const id = pathToNodeId.get(normalise(p));
+                    if (id) { highlightIds.push(id); highlightPaths.push(p); }
+                  }
 
-                  sendEvent({ type: 'reply', reply, highlightIds, filePaths });
+                  sendEvent({ type: 'reply', reply, highlightIds, filePaths: highlightPaths });
                   res.end();
                 } catch (err) {
                   // If headers already sent (SSE started), send error event; otherwise plain JSON.

@@ -51,8 +51,7 @@ describe('CHAT_TOOLS registry', () => {
     expect(names.has('get_critical_hubs')).toBe(true);
     expect(names.has('get_god_functions')).toBe(true);
     expect(names.has('search_code')).toBe(true);
-    expect(names.has('list_spec_domains')).toBe(true);
-    expect(names.has('search_specs')).toBe(true);
+    expect(names.has('search_specs')).toBe(true); // list_spec_domains is subsumed: omit query to list domains
     expect(names.has('get_refactor_report')).toBe(true);
     expect(names.has('suggest_insertion_points')).toBe(true);
   });

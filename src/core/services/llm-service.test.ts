@@ -16,6 +16,8 @@ import {
   createMockLLMService,
   createLLMService,
   estimateTokens,
+  lookupPricing,
+  parseRetryAfterMs,
   type CompletionRequest,
 } from './llm-service.js';
 
@@ -644,9 +646,106 @@ describe('Integration Tests (skipped without API keys)', () => {
     it('should support custom models for CLI providers', () => {
       const claudeProvider = new ClaudeCodeProvider('claude-sonnet');
       const mistralProvider = new MistralVibeProvider('mistral-small');
-      
+
       expect(claudeProvider).toBeDefined();
       expect(mistralProvider).toBeDefined();
     });
+  });
+});
+
+// ============================================================================
+// lookupPricing
+// ============================================================================
+
+describe('lookupPricing', () => {
+  it('returns exact match for known anthropic model', () => {
+    const p = lookupPricing('anthropic', 'claude-3-haiku');
+    expect(p.input).toBe(0.25);
+    expect(p.output).toBe(1.25);
+  });
+
+  it('uses prefix match for versioned model IDs', () => {
+    // "claude-sonnet-4-6-20251120" should match "claude-sonnet-4" prefix
+    const p = lookupPricing('anthropic', 'claude-sonnet-4-6-20251120');
+    expect(p.input).toBe(3.0);
+    expect(p.output).toBe(15.0);
+  });
+
+  it('falls back to provider default when no match', () => {
+    const p = lookupPricing('anthropic', 'unknown-model-xyz');
+    expect(p.input).toBeDefined();
+    expect(p.output).toBeDefined();
+  });
+
+  it('returns zero-cost for claude-code provider', () => {
+    const p = lookupPricing('claude-code', 'any-model');
+    expect(p.input).toBe(0);
+    expect(p.output).toBe(0);
+  });
+
+  it('returns openai pricing for known openai model', () => {
+    const p = lookupPricing('openai', 'gpt-4o-mini');
+    expect(p.input).toBe(0.15);
+  });
+
+  it('falls back to anthropic table for unknown provider', () => {
+    const p = lookupPricing('totally-unknown-provider', 'claude-3-haiku');
+    // unknown provider → falls back to PRICING.anthropic
+    expect(p).toBeDefined();
+  });
+
+  it('returns gemini pricing for gemini models', () => {
+    const p = lookupPricing('gemini', 'gemini-2.0-flash');
+    expect(p.input).toBe(0.1);
+    expect(p.output).toBe(0.4);
+  });
+});
+
+// ============================================================================
+// parseRetryAfterMs
+// ============================================================================
+
+describe('parseRetryAfterMs', () => {
+  it('returns undefined when body is empty and no header', () => {
+    expect(parseRetryAfterMs('', null)).toBeUndefined();
+  });
+
+  it('parses numeric Retry-After header (seconds)', () => {
+    const ms = parseRetryAfterMs('', '2');
+    expect(ms).toBeGreaterThan(2000);
+    expect(ms).toBeLessThan(3000);
+  });
+
+  it('returns undefined for zero-second Retry-After header', () => {
+    expect(parseRetryAfterMs('', '0')).toBeUndefined();
+  });
+
+  it('returns undefined for non-numeric non-date Retry-After header', () => {
+    expect(parseRetryAfterMs('', 'not-a-date-or-number')).toBeUndefined();
+  });
+
+  it('parses HTTP-date format Retry-After header', () => {
+    const future = new Date(Date.now() + 5_000);
+    const ms = parseRetryAfterMs('', future.toUTCString());
+    expect(ms).toBeGreaterThan(0);
+    expect(ms).toBeLessThan(10_000);
+  });
+
+  it('parses "Limit resets at:" in body', () => {
+    const future = new Date(Date.now() + 10_000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const dateStr = `${future.getUTCFullYear()}-${pad(future.getUTCMonth()+1)}-${pad(future.getUTCDate())} ${pad(future.getUTCHours())}:${pad(future.getUTCMinutes())}:${pad(future.getUTCSeconds())} UTC`;
+    const body = `Rate limit exceeded. Limit resets at: ${dateStr}`;
+    const ms = parseRetryAfterMs(body);
+    expect(ms).toBeGreaterThan(0);
+    expect(ms).toBeLessThan(15_000);
+  });
+
+  it('returns undefined when "Limit resets at:" is in the past', () => {
+    const past = new Date(Date.now() - 60_000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const dateStr = `${past.getUTCFullYear()}-${pad(past.getUTCMonth()+1)}-${pad(past.getUTCDate())} ${pad(past.getUTCHours())}:${pad(past.getUTCMinutes())}:${pad(past.getUTCSeconds())} UTC`;
+    const body = `Limit resets at: ${dateStr}`;
+    expect(parseRetryAfterMs(body)).toBeUndefined();
   });
 });

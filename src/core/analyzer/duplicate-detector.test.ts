@@ -34,6 +34,8 @@ function makeCallGraph(nodes: FunctionNode[]): CallGraphResult {
   return {
     nodes: nodeMap,
     edges: [],
+    classes: [],
+    inheritanceEdges: [],
     hubFunctions: [],
     entryPoints: [],
     layerViolations: [],

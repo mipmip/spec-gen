@@ -12,6 +12,11 @@ import { runStage2 } from './stage2-entities.js';
 import { runStage3 } from './stage3-services.js';
 import { runStage4 } from './stage4-api.js';
 import { runStage6 } from './stage6-adr.js';
+import { astChunkContent } from '../../analyzer/ast-chunker.js';
+
+vi.mock('../../analyzer/ast-chunker.js', () => ({
+  astChunkContent: vi.fn().mockImplementation(async (content: string) => [content]),
+}));
 
 // ============================================================================
 // SHARED MOCK PIPELINE
@@ -126,7 +131,7 @@ describe('runStage2', () => {
 
   it('should mark large-file entities with PARTIAL SPEC prefix', async () => {
     // Return 3 chunks to simulate a large file
-    (pipeline.chunkContent as ReturnType<typeof vi.fn>).mockReturnValue(['chunk1', 'chunk2', 'chunk3']);
+    vi.mocked(astChunkContent).mockResolvedValue(['chunk1', 'chunk2', 'chunk3']);
     const entity = { name: 'Big', description: 'Original', properties: [], relationships: [], validations: [], scenarios: [], location: '' };
     (pipeline.llm.completeJSON as ReturnType<typeof vi.fn>).mockResolvedValue([entity]);
 
@@ -203,7 +208,7 @@ describe('runStage3', () => {
   });
 
   it('should mark large-file services with PARTIAL SPEC prefix', async () => {
-    (pipeline.chunkContent as ReturnType<typeof vi.fn>).mockReturnValue(['c1', 'c2']);
+    vi.mocked(astChunkContent).mockResolvedValue(['c1', 'c2']);
     const service = { name: 'Svc', purpose: 'Original', operations: [], dependencies: [], sideEffects: [], domain: 'x' };
     (pipeline.llm.completeJSON as ReturnType<typeof vi.fn>).mockResolvedValue([service]);
 
@@ -265,7 +270,7 @@ describe('runStage4', () => {
   });
 
   it('should mark large-file endpoints with PARTIAL SPEC prefix', async () => {
-    (pipeline.chunkContent as ReturnType<typeof vi.fn>).mockReturnValue(['c1', 'c2']);
+    vi.mocked(astChunkContent).mockResolvedValue(['c1', 'c2']);
     const endpoint = { method: 'GET', path: '/x', purpose: 'Original', scenarios: [] };
     (pipeline.llm.completeJSON as ReturnType<typeof vi.fn>).mockResolvedValue([endpoint]);
 

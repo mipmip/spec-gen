@@ -17,6 +17,8 @@ import {
   handleAnalyzeImpact,
   handleGetCriticalHubs,
   handleGetGodFunctions,
+  handleGetFileDependencies,
+  handleTraceExecutionPath,
 } from './mcp-handlers/graph.js';
 
 import {
@@ -24,12 +26,16 @@ import {
   handleSuggestInsertionPoints,
   handleSearchSpecs,
   handleListSpecDomains,
+  handleGetSpec,
 } from './mcp-handlers/semantic.js';
 
 import {
   handleGetArchitectureOverview,
   handleGetRefactorReport,
+  handleGetDecisions,
 } from './mcp-handlers/analysis.js';
+
+import { handleOrient } from './mcp-handlers/orient.js';
 
 // ============================================================================
 // TYPES
@@ -79,13 +85,45 @@ function extractFilePaths(obj: unknown): string[] {
 // ============================================================================
 
 export const CHAT_TOOLS: ChatTool[] = [
+  // ── Orient (start here) ──────────────────────────────────────────────────
+  {
+    name: 'orient',
+    description:
+      'START HERE. USE THIS WHEN: beginning any new task — "add X", "fix Y", "where does Z live?". ' +
+      'Returns relevant functions, files, spec domains, call neighbours, and insertion points in ONE call. ' +
+      'Replaces the need to chain search_code → search_specs → suggest_insertion_points manually.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        task:      { type: 'string', description: 'Natural language description of the task' },
+        limit:     { type: 'number', description: 'Number of relevant functions to return (default: 5)' },
+      },
+      required: ['directory', 'task'],
+    },
+    async execute(directory, args) {
+      const result = await handleOrient(
+        (args.directory as string) ?? directory,
+        args.task as string,
+        (args.limit as number) ?? 5,
+      );
+      const paths: string[] = [];
+      if (result && typeof result === 'object') {
+        const r = result as Record<string, unknown>;
+        for (const f of (r.relevantFiles as string[]) ?? []) paths.push(f);
+      }
+      return { result, filePaths: [...new Set(paths)] };
+    },
+  },
+
   // ── Architecture overview ────────────────────────────────────────────────
   {
     name: 'get_architecture_overview',
     description:
-      'Return a high-level architecture map: domain clusters, cross-cluster dependencies, ' +
-      'global entry points, and critical hubs. Use this as the first call when the user asks ' +
-      'about the project architecture or wants a broad overview.',
+      'USE THIS WHEN: the user asks "how is this project organized?", "what are the main ' +
+      'components?", or wants a broad overview before diving in. ' +
+      'Returns domain clusters, cross-cluster dependencies, global entry points, and critical ' +
+      'hubs in one call — faster than reading package.json + directory tree yourself.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -115,8 +153,10 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'get_call_graph',
     description:
-      'Return hub functions (high fan-in), entry points, and layer violations. ' +
-      'Use this when the user asks about which functions are most critical or most called.',
+      'USE THIS WHEN: the user asks "which functions are called the most?", "what are ' +
+      'the critical bottlenecks?", or "are there layer violations?". ' +
+      'Returns hub functions, entry points, and architecture violations across all files — ' +
+      'impossible to reconstruct by reading individual files.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -134,8 +174,10 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'get_subgraph',
     description:
-      'Extract the call subgraph around a function. Use this to show what a function calls ' +
-      '(downstream) or who calls it (upstream), or both.',
+      'USE THIS WHEN: the user needs to trace calls from or to a specific function — ' +
+      '"what does X call?", "who calls Y?", "show me the call chain for Z". ' +
+      'More targeted than get_call_graph. Works across all files without you having to ' +
+      'grep through each one.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -162,13 +204,45 @@ export const CHAT_TOOLS: ChatTool[] = [
     },
   },
 
+  // ── Execution path tracing ───────────────────────────────────────────────
+  {
+    name: 'trace_execution_path',
+    description:
+      'USE THIS WHEN debugging: "how does request X reach function Y?", ' +
+      '"which call chain produced this error?", "is there a path from A to B?". ' +
+      'Returns all paths ordered by hop count. Complements get_subgraph (neighbourhood) ' +
+      'with point-to-point tracing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory:      { type: 'string', description: 'Absolute path to the project directory' },
+        entryFunction:  { type: 'string', description: 'Starting function name (exact or partial)' },
+        targetFunction: { type: 'string', description: 'Target function name (exact or partial)' },
+        maxDepth: { type: 'number', description: 'Max path length in hops (default: 6)' },
+        maxPaths: { type: 'number', description: 'Max paths returned (default: 10)' },
+      },
+      required: ['directory', 'entryFunction', 'targetFunction'],
+    },
+    async execute(directory, args) {
+      const result = await handleTraceExecutionPath(
+        (args.directory as string) ?? directory,
+        args.entryFunction as string,
+        args.targetFunction as string,
+        (args.maxDepth as number) ?? 6,
+        (args.maxPaths as number) ?? 10,
+      );
+      return { result, filePaths: extractFilePaths(result) };
+    },
+  },
+
   // ── Impact analysis ──────────────────────────────────────────────────────
   {
     name: 'analyze_impact',
     description:
-      'Deep impact analysis for a function: fan-in, fan-out, blast radius, risk score, ' +
-      'upstream/downstream chains. Use this when the user asks about the impact of changing ' +
-      'or adding something.',
+      'USE THIS WHEN: the user asks "what breaks if I change X?", "what\'s the blast radius ' +
+      'of modifying Y?", or "is it safe to refactor Z?". ' +
+      'Returns risk score, fan-in/out, and full upstream/downstream call chains — ' +
+      'gives the complete picture without reading every caller file.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -192,8 +266,9 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'get_critical_hubs',
     description:
-      'Return the most critical hub functions (high fan-in). Use this when the user asks ' +
-      'about bottlenecks, central functions, or what to refactor.',
+      'USE THIS WHEN: the user asks "what\'s the most central code?", "what should I ' +
+      'refactor to reduce coupling?", or "which functions are shared the most?". ' +
+      'Lists the highest fan-in functions — modifying them has the widest blast radius.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -217,8 +292,9 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'get_god_functions',
     description:
-      'Find god functions (high fan-out orchestrators). Use this when the user asks ' +
-      'about complex or oversized functions that do too much.',
+      'USE THIS WHEN: the user asks "which functions do too much?", "what are the worst ' +
+      'SRP violations?", or "which functions should be split?". ' +
+      'Finds high fan-out orchestrators — the functions most likely to need decomposition.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -242,9 +318,10 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'suggest_insertion_points',
     description:
-      'Find the best places to implement a new feature using semantic + structural analysis. ' +
-      'Use this when the user asks where to add a feature or how to integrate something new. ' +
-      'Requires a vector index (spec-gen analyze --embed).',
+      'USE THIS WHEN: the user asks "where should I add X?", "where\'s the best place to ' +
+      'implement Y?", or "how do I integrate Z into the existing code?". ' +
+      'Combines semantic search + call graph to find ranked candidates with context — ' +
+      'far more targeted than grepping for similar patterns.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -275,9 +352,10 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'search_code',
     description:
-      'Semantic search over the codebase to find functions by meaning. ' +
-      'Use this when the user asks "where is X implemented?" or "which code handles Y?". ' +
-      'Requires a vector index (spec-gen analyze --embed).',
+      'USE THIS WHEN: you don\'t know which file or function handles a concept — ' +
+      '"where is rate limiting implemented?", "which function validates tokens?", ' +
+      '"what handles authentication?". Beats grep when the function name is unknown. ' +
+      'Falls back to keyword search automatically if the embedding server is down.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -304,40 +382,19 @@ export const CHAT_TOOLS: ChatTool[] = [
     },
   },
 
-  // ── List spec domains ────────────────────────────────────────────────────
-  {
-    name: 'list_spec_domains',
-    description:
-      'List all OpenSpec domains available in this project. ' +
-      'Use this first when the user asks a broad spec question and you need to discover ' +
-      'what domains exist before doing a targeted search_specs call.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        directory: { type: 'string', description: 'Absolute path to the project directory' },
-      },
-      required: ['directory'],
-    },
-    async execute(directory, args) {
-      const result = await handleListSpecDomains((args.directory as string) ?? directory);
-      return { result, filePaths: [] };
-    },
-  },
-
-  // ── Spec semantic search ─────────────────────────────────────────────────
+  // ── Spec semantic search (+ domain discovery when query is omitted) ──────
   {
     name: 'search_specs',
     description:
-      'Semantic search over OpenSpec specifications to find requirements, design notes, ' +
-      'and architecture decisions by meaning. Returns linked source files for graph highlighting. ' +
-      'Use this when the user asks "which spec covers X?", "what requirement describes Y?", ' +
-      'or "where should we implement Z?" (spec-first approach). ' +
-      'Requires a spec index (spec-gen analyze --embed or --reindex-specs).',
+      'USE THIS WHEN: the user asks "which spec covers X?", "what does the spec say about Y?", ' +
+      '"which requirement describes Z?", or "what domains exist?". ' +
+      'Omit query to list available spec domains. Provide a query to search by meaning. ' +
+      'Returns linked source files for graph highlighting.',
     inputSchema: {
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
-        query:     { type: 'string', description: 'Natural language search query' },
+        query:     { type: 'string', description: 'Natural language search query (omit to list domains)' },
         limit:     { type: 'number', description: 'Results to return (default: 10)' },
         domain:    { type: 'string', description: 'Filter by domain name (e.g. "auth", "analyzer")' },
         section:   {
@@ -345,11 +402,17 @@ export const CHAT_TOOLS: ChatTool[] = [
           description: 'Filter by section type: "requirements", "purpose", "design", "architecture", "entities"',
         },
       },
-      required: ['directory', 'query'],
+      required: ['directory'],
     },
     async execute(directory, args) {
+      const dir = (args.directory as string) ?? directory;
+      // No query → return domain list instead
+      if (!args.query) {
+        const result = await handleListSpecDomains(dir);
+        return { result, filePaths: [] };
+      }
       const result = await handleSearchSpecs(
-        (args.directory as string) ?? directory,
+        dir,
         args.query as string,
         (args.limit as number) ?? 10,
         args.domain as string | undefined,
@@ -367,13 +430,102 @@ export const CHAT_TOOLS: ChatTool[] = [
     },
   },
 
+  // ── Get spec by domain ───────────────────────────────────────────────────
+  {
+    name: 'get_spec',
+    description:
+      'USE THIS WHEN: the user asks to read a specific spec domain — "show me the auth ' +
+      'spec", "what does the analyzer spec say?", "read the API spec". ' +
+      'Returns the full spec content and the functions that implement it, in one call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        domain:    { type: 'string', description: 'Domain name, e.g. "auth" or "analyzer"' },
+      },
+      required: ['directory', 'domain'],
+    },
+    async execute(directory, args) {
+      const result = await handleGetSpec(
+        (args.directory as string) ?? directory,
+        args.domain as string,
+      );
+      return { result, filePaths: [] };
+    },
+  },
+
+  // ── Get file dependencies ────────────────────────────────────────────────
+  {
+    name: 'get_file_dependencies',
+    description:
+      'USE THIS WHEN: the user asks "what does file X import?", "what files depend on Y?", ' +
+      'or when planning a refactor and needing to understand coupling before touching a file. ' +
+      'Uses pre-computed in/out degree — no need to grep import statements across the codebase.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        filePath:  { type: 'string', description: 'Relative file path, e.g. "src/core/analyzer/vector-index.ts"' },
+        direction: {
+          type: 'string',
+          enum: ['imports', 'importedBy', 'both'],
+          description: '"imports", "importedBy", or "both" (default)',
+        },
+      },
+      required: ['directory', 'filePath'],
+    },
+    async execute(directory, args) {
+      const result = await handleGetFileDependencies(
+        (args.directory as string) ?? directory,
+        args.filePath as string,
+        (args.direction as 'imports' | 'importedBy' | 'both') ?? 'both',
+      );
+      const paths: string[] = [];
+      if (result && typeof result === 'object') {
+        const r = result as Record<string, unknown>;
+        for (const dep of (r.imports as Array<{ filePath?: string }>) ?? []) {
+          if (dep.filePath) paths.push(dep.filePath);
+        }
+        for (const dep of (r.importedBy as Array<{ filePath?: string }>) ?? []) {
+          if (dep.filePath) paths.push(dep.filePath);
+        }
+      }
+      return { result, filePaths: [...new Set(paths)] };
+    },
+  },
+
+  // ── Architecture Decision Records ────────────────────────────────────────
+  {
+    name: 'get_decisions',
+    description:
+      'USE THIS WHEN: the user asks "why was X decided?", "is there an ADR about Y?", ' +
+      'or "what\'s the rationale behind Z?". Lists documented architectural decisions — ' +
+      'gives the "why" that is not visible in the code itself.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        query:     { type: 'string', description: 'Optional text filter on title or content' },
+      },
+      required: ['directory'],
+    },
+    async execute(directory, args) {
+      const result = await handleGetDecisions(
+        (args.directory as string) ?? directory,
+        args.query as string | undefined,
+      );
+      return { result, filePaths: [] };
+    },
+  },
+
   // ── Refactor report ──────────────────────────────────────────────────────
   {
     name: 'get_refactor_report',
     description:
-      'Return a prioritized refactor report: unreachable code, hub overload, god functions, ' +
-      'SRP violations, cyclic dependencies. Use this when the user asks about code quality ' +
-      'or what to improve.',
+      'USE THIS WHEN: the user asks "what should I clean up?", "what\'s the biggest ' +
+      'technical debt?", or "what are the worst code quality issues?". ' +
+      'Returns a prioritized list: unreachable code, hub overload, god functions, ' +
+      'SRP violations, cyclic dependencies — all in one report.',
     inputSchema: {
       type: 'object',
       properties: {

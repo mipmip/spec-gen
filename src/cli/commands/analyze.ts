@@ -6,7 +6,7 @@
  */
 
 import { Command } from 'commander';
-import { stat, writeFile, mkdir } from 'node:fs/promises';
+import { stat, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../../utils/logger.js';
 import { fileExists, formatDuration, formatAge } from '../../utils/command-helpers.js';
@@ -41,6 +41,7 @@ import {
   writeArchitectureMd,
 } from '../../core/analyzer/architecture-writer.js';
 import { EmbeddingService } from '../../core/analyzer/embedding-service.js';
+import { generateCodebaseDigest } from '../../core/analyzer/codebase-digest.js';
 
 // ============================================================================
 // TYPES
@@ -204,7 +205,11 @@ export const analyzeCommand = new Command('analyze')
   .option(
     '--embed',
     'Build a semantic vector index after analysis (requires EMBED_BASE_URL + EMBED_MODEL)',
-    false
+    true
+  )
+  .option(
+    '--no-embed',
+    'Skip vector index build (overrides default --embed)'
   )
   .option(
     '--reindex-specs',
@@ -225,7 +230,7 @@ Examples:
   $ spec-gen analyze --output ./my-analysis
                                      Custom output location
   $ spec-gen analyze --force         Force re-analysis
-  $ spec-gen analyze --embed         Also build semantic vector index (code + specs)
+  $ spec-gen analyze --no-embed      Skip vector index build
   $ spec-gen analyze --reindex-specs Re-index specs only (no full re-analysis)
 
 Output files:
@@ -334,6 +339,12 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
             logger.info('Domains detected', repoStructure.domains.map((d: { name: string }) => d.name).join(', ') || 'None');
             logger.info('Architecture', repoStructure.architecture.pattern);
             logger.blank();
+
+            // If embed is requested, run the embed step (incremental: only re-embeds changed functions)
+            if (opts.embed) {
+              await runEmbedStep(rootPath, outputPath, specGenConfig, opts.force ?? false, null);
+            }
+
             logger.info('Next step', "Run 'spec-gen generate' to create OpenSpec files");
             return;
           } catch (readErr) {
@@ -479,7 +490,7 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
           console.log(`  ${severity} Code Duplication  (${s.duplicatedFunctions}/${s.totalFunctions} functions):`);
           console.log(`    ├─ Ratio: ${(s.duplicationRatio * 100).toFixed(1)}%`);
           console.log(`    ├─ Clone groups: ${s.cloneGroupCount}`);
-          
+
           // Show top clone types
           const typeCounts: Record<string, number> = { exact: 0, structural: 0, near: 0 };
           for (const group of dup.cloneGroups) {
@@ -489,9 +500,9 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
             .filter(([_, count]) => count > 0)
             .map(([type, count]) => `${count} ${type}`)
             .join('  ·  ');
-          
+
           console.log(`    └─ Types: ${typeLabels}`);
-          
+
           // Show top 5 clone groups
           if (dup.cloneGroups.length > 0) {
             console.log('');
@@ -499,17 +510,17 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
             const topGroups = dup.cloneGroups
               .sort((a: CloneGroup, b: CloneGroup) => b.instances.length - a.instances.length)
               .slice(0, 5);
-            
+
             for (const group of topGroups) {
               const files = group.instances.map((i: CloneInstance) => {
                 const fileParts = i.file.split('/');
                 return `${fileParts[fileParts.length - 2]}/${fileParts[fileParts.length - 1]}:${i.functionName}`;
               }).join('  ');
-              
+
               console.log(`    ${group.type.padEnd(10)} (${group.instances.length}x, ${group.lineCount} lines): ${files}`);
             }
           }
-          
+
           console.log('');
           console.log(`    → ${opts.output}duplicates.json`);
           console.log('');
@@ -544,6 +555,13 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
         logger.debug(`ARCHITECTURE.md generation skipped: ${(archErr as Error).message}`);
       }
 
+      // Generate .spec-gen/analysis/CODEBASE.md — agent-readable architecture digest
+      const digestWritten = await generateCodebaseDigest(
+        artifacts.llmContext,
+        depGraph,
+        { rootPath, outputDir: outputPath },
+      );
+
       // Files generated
       console.log('  Output Files:');
       console.log(`    ├─ ${opts.output}repo-structure.json`);
@@ -552,9 +570,27 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
       console.log(`    ├─ ${opts.output}dependencies.mermaid`);
       if (architectureMdWritten) {
         console.log(`    ├─ ${opts.output}SUMMARY.md`);
-        console.log('    └─ ARCHITECTURE.md');
+        console.log('    ├─ ARCHITECTURE.md');
       } else {
-        console.log(`    └─ ${opts.output}SUMMARY.md`);
+        console.log(`    ├─ ${opts.output}SUMMARY.md`);
+      }
+      if (digestWritten) {
+        console.log(`    └─ ${opts.output}CODEBASE.md`);
+        console.log('');
+        console.log('  Agent setup (one-time):');
+        console.log(`    Add to your CLAUDE.md or .clinerules:`);
+        console.log('');
+        console.log(`    @.spec-gen/analysis/CODEBASE.md`);
+        console.log('');
+        console.log('    ## spec-gen MCP tools — when to use them');
+        console.log('    | Situation                                       | Tool                              |');
+        console.log('    |-------------------------------------------------|-----------------------------------|');
+        console.log("    | Don't know which file/function handles a concept | search_code                      |");
+        console.log('    | Need call topology across many files            | get_subgraph / analyze_impact     |');
+        console.log('    | Starting a new task on an unfamiliar codebase   | orient                            |');
+        console.log('    | Planning where to add a feature                 | suggest_insertion_points          |');
+        console.log('    | Checking if code still matches spec             | check_spec_drift                  |');
+        console.log('    | Finding spec requirements by meaning            | search_specs                      |');
       }
       console.log('');
 
@@ -562,42 +598,7 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
       // PHASE 5 (optional): BUILD VECTOR INDEX
       // ========================================================================
       if (opts.embed) {
-        console.log('  Building semantic vector index...');
-        try {
-          const { VectorIndex } = await import('../../core/analyzer/vector-index.js');
-
-          // Resolve embedding config: env vars take priority, then .spec-gen/config.json
-          let embedSvc: InstanceType<typeof EmbeddingService>;
-          try {
-            embedSvc = EmbeddingService.fromEnv();
-          } catch {
-            const cfg = await readSpecGenConfig(rootPath);
-            if (!cfg) throw new Error('No embedding config found. Set EMBED_BASE_URL and EMBED_MODEL, or add "embedding" to .spec-gen/config.json');
-            const svcFromConfig = EmbeddingService.fromConfig(cfg);
-            if (!svcFromConfig) throw new Error('No embedding config found. Set EMBED_BASE_URL and EMBED_MODEL, or add "embedding" to .spec-gen/config.json');
-            embedSvc = svcFromConfig;
-          }
-
-          const cg = result.artifacts.llmContext.callGraph;
-          const sigs = result.artifacts.llmContext.signatures ?? [];
-
-          if (!cg || cg.nodes.length === 0) {
-            console.log('    ⚠ No call graph data — function index skipped');
-          } else {
-            const hubIds = new Set(cg.hubFunctions.map(f => f.id));
-            const entryIds = new Set(cg.entryPoints.map(f => f.id));
-
-            await VectorIndex.build(outputPath, cg.nodes, sigs, hubIds, entryIds, embedSvc);
-            console.log(`    ✓ Function index built (${cg.nodes.length} functions)`);
-            console.log(`    → ${opts.output}vector-index/`);
-          }
-
-          // Also index specs if they exist
-          await runSpecIndexing(rootPath, outputPath, specGenConfig);
-        } catch (embedErr) {
-          console.log(`    ✗ Vector index failed: ${(embedErr as Error).message}`);
-        }
-        console.log('');
+        await runEmbedStep(rootPath, outputPath, specGenConfig, opts.force ?? false, result.artifacts.llmContext);
       }
 
       // Duration
@@ -617,6 +618,85 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
       process.exitCode = 1;
     }
   });
+
+// ============================================================================
+// EMBED STEP HELPER
+// ============================================================================
+
+/**
+ * Build (or incrementally update) the vector index from a LLMContext.
+ * When llmContext is null, reads llm-context.json from outputDir (cache path).
+ * Non-fatal: prints a warning on failure without throwing.
+ */
+async function runEmbedStep(
+  rootPath: string,
+  outputPath: string,
+  specGenConfig: SpecGenConfig | null,
+  force: boolean,
+  llmContext: import('../../core/analyzer/artifact-generator.js').LLMContext | null,
+): Promise<void> {
+  console.log('  Building semantic vector index...');
+  try {
+    const { EmbeddingService } = await import('../../core/analyzer/embedding-service.js');
+    const { VectorIndex } = await import('../../core/analyzer/vector-index.js');
+
+    // Resolve embedding service
+    let embedSvc: InstanceType<typeof EmbeddingService>;
+    try {
+      embedSvc = EmbeddingService.fromEnv();
+    } catch {
+      const cfg = specGenConfig ?? await readSpecGenConfig(rootPath);
+      if (!cfg) throw new Error('No embedding config found. Set EMBED_BASE_URL and EMBED_MODEL, or add "embedding" to .spec-gen/config.json');
+      const svcFromConfig = EmbeddingService.fromConfig(cfg);
+      if (!svcFromConfig) throw new Error('No embedding config found. Set EMBED_BASE_URL and EMBED_MODEL, or add "embedding" to .spec-gen/config.json');
+      embedSvc = svcFromConfig;
+    }
+
+    // Load context from disk if not provided (cache hit path)
+    if (!llmContext) {
+      try {
+        const raw = await readFile(join(outputPath, 'llm-context.json'), 'utf-8');
+        llmContext = JSON.parse(raw);
+      } catch {
+        console.log('    ⚠ Could not read llm-context.json — run spec-gen analyze --force');
+        return;
+      }
+    }
+
+    const cg = llmContext!.callGraph;
+    const sigs = llmContext!.signatures ?? [];
+
+    if (!cg || cg.nodes.length === 0) {
+      console.log('    ⚠ No call graph data — function index skipped');
+    } else {
+      const hubIds = new Set(cg.hubFunctions.map(f => f.id));
+      const entryIds = new Set(cg.entryPoints.map(f => f.id));
+
+      const fileContents = new Map<string, string>();
+      const uniquePaths = new Set(cg.nodes.map(n => n.filePath));
+      await Promise.all([...uniquePaths].map(async fp => {
+        try {
+          fileContents.set(fp, await readFile(join(rootPath, fp), 'utf-8'));
+        } catch { /* skip unreadable files */ }
+      }));
+
+      const { embedded, reused } = await VectorIndex.build(
+        outputPath, cg.nodes, sigs, hubIds, entryIds, embedSvc, fileContents,
+        /* incremental */ !force
+      );
+      const total = embedded + reused;
+      const cacheNote = reused > 0 ? ` (${embedded} embedded, ${reused} cached)` : '';
+      console.log(`    ✓ Function index built (${total} functions${cacheNote}, ${fileContents.size} files with skeleton bodies)`);
+      console.log(`    → ${outputPath.replace(rootPath + '/', '')}vector-index/`);
+    }
+
+    // Also index specs if they exist
+    await runSpecIndexing(rootPath, outputPath, specGenConfig);
+  } catch (embedErr) {
+    console.log(`    ✗ Vector index failed: ${(embedErr as Error).message}`);
+  }
+  console.log('');
+}
 
 // ============================================================================
 // SPEC INDEXING HELPER

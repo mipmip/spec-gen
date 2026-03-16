@@ -13,10 +13,31 @@
  */
 
 import Parser from 'tree-sitter';
+import { FunctionRegistryTrie } from './function-registry-trie.js';
+import type { ImportMap } from './import-resolver-bridge.js';
+import { inferTypesFromSource, resolveViaTypeInference } from './type-inference-engine.js';
+import { extractAllHttpEdges } from './http-route-parser.js';
 
 // ============================================================================
 // TYPES
 // ============================================================================
+
+export type EdgeConfidence =
+  | 'self_cls'       // intra-class call via self/cls
+  | 'type_inference' // receiver type resolved via type inference
+  | 'import'         // callee was imported from a known file
+  | 'http_endpoint'  // cross-language HTTP route match
+  | 'same_file'      // multiple candidates; same-file wins
+  | 'name_only';     // last-resort: pick first candidate by name
+
+/** Internal raw edge before resolution */
+interface RawEdge {
+  callerId: string;
+  calleeName: string;
+  line: number;
+  /** Receiver variable name in `obj.method()` calls */
+  calleeObject?: string;
+}
 
 export interface FunctionNode {
   /** Unique ID: "filepath::ClassName.methodName" or "filepath::functionName" */
@@ -31,6 +52,10 @@ export interface FunctionNode {
   endIndex: number;
   fanIn: number;
   fanOut: number;
+  /** First meaningful line of the doc comment / docstring, extracted from AST positions */
+  docstring?: string;
+  /** Declaration line(s) up to opening brace/colon, whitespace-normalized */
+  signature?: string;
 }
 
 export interface CallEdge {
@@ -40,6 +65,7 @@ export interface CallEdge {
   /** Raw name as it appears in source */
   calleeName: string;
   line?: number;
+  confidence: EdgeConfidence;
 }
 
 export interface LayerViolation {
@@ -50,9 +76,49 @@ export interface LayerViolation {
   reason: string;
 }
 
+/**
+ * A class or interface as a structural unit, grouping its methods.
+ * Derived from FunctionNode.className after the call graph is built.
+ */
+export interface ClassNode {
+  /** Unique ID: first filePath where the class is seen + "::" + className */
+  id: string;
+  name: string;
+  filePath: string;
+  language: string;
+  /** Direct parent class names (from `extends` / Python base / C++ base) */
+  parentClasses: string[];
+  /** Implemented interfaces (TypeScript `implements`, Java `implements`) */
+  interfaces: string[];
+  /** IDs of FunctionNode members that belong to this class */
+  methodIds: string[];
+  /** Sum of method fanIn values */
+  fanIn: number;
+  /** Sum of method fanOut values */
+  fanOut: number;
+  /** True for synthetic file-level module nodes (free functions grouped by file) */
+  isModule?: boolean;
+}
+
+/**
+ * An inheritance or implementation edge between two ClassNodes in the graph.
+ */
+export interface InheritanceEdge {
+  id: string;
+  /** ClassNode id of the parent / base / interface */
+  parentId: string;
+  /** ClassNode id of the child / derived / implementor */
+  childId: string;
+  kind: 'extends' | 'implements' | 'embeds';
+}
+
 export interface CallGraphResult {
   nodes: Map<string, FunctionNode>;
   edges: CallEdge[];
+  /** Class-level structural nodes, derived from FunctionNode.className grouping */
+  classes: ClassNode[];
+  /** Inheritance / implementation edges between ClassNodes */
+  inheritanceEdges: InheritanceEdge[];
   /** Functions with fanIn >= HUB_THRESHOLD */
   hubFunctions: FunctionNode[];
   /** Functions with no internal callers (fanIn === 0) */
@@ -70,6 +136,8 @@ export interface CallGraphResult {
 export interface SerializedCallGraph {
   nodes: FunctionNode[];
   edges: CallEdge[];
+  classes: ClassNode[];
+  inheritanceEdges: InheritanceEdge[];
   hubFunctions: FunctionNode[];
   entryPoints: FunctionNode[];
   layerViolations: LayerViolation[];
@@ -120,6 +188,14 @@ const IGNORED_CALLEES = new Set([
   'make_shared', 'make_unique', 'move', 'forward', 'swap',
   'static_cast', 'dynamic_cast', 'reinterpret_cast', 'const_cast',
 ]);
+
+/** Returns true if the name should be skipped as a call target. */
+function isIgnoredCallee(name: string): boolean {
+  if (IGNORED_CALLEES.has(name)) return true;
+  // ALL_CAPS names (3+ chars) are almost certainly C/C++ macros, not functions
+  if (/^[A-Z][A-Z0-9_]{2,}$/.test(name)) return true;
+  return false;
+}
 
 // ============================================================================
 // PARSER SINGLETONS (lazy init)
@@ -237,6 +313,204 @@ function findEnclosingFunction(
 }
 
 // ============================================================================
+// DOCSTRING / SIGNATURE EXTRACTION HELPERS
+// ============================================================================
+
+/**
+ * Scan backward from `startIndex` in `source` to find the doc comment
+ * immediately preceding the function declaration. Skip blank lines.
+ *
+ * For Python, docstrings are INSIDE the function body — scan forward from
+ * `startIndex` past the `def name(...):` colon to find the triple-quoted string.
+ *
+ * Returns the first meaningful (non-empty, non-decorator) line of the comment.
+ */
+function extractDocstringBefore(
+  source: string,
+  startIndex: number,
+  language: string
+): string | undefined {
+  // ── Python: scan forward past the colon into the function body ──────────
+  if (language === 'Python') {
+    // Find the colon that ends the `def` line
+    let i = startIndex;
+    while (i < source.length && source[i] !== ':') i++;
+    // Skip past the colon
+    i++;
+    // Skip whitespace / newline
+    while (i < source.length && (source[i] === ' ' || source[i] === '\t' || source[i] === '\n' || source[i] === '\r')) i++;
+    // Check for triple-quoted docstring
+    const tripleDouble = source.startsWith('"""', i);
+    const tripleSingle = source.startsWith("'''", i);
+    if (tripleDouble || tripleSingle) {
+      const quote = tripleDouble ? '"""' : "'''";
+      const bodyStart = i + 3;
+      const closeIdx = source.indexOf(quote, bodyStart);
+      if (closeIdx === -1) return undefined;
+      const inner = source.slice(bodyStart, closeIdx);
+      const firstLine = inner.split('\n').map(l => l.trim()).find(l => l.length > 0);
+      return firstLine ?? undefined;
+    }
+    return undefined;
+  }
+
+  // ── All other languages: scan backward from startIndex ─────────────────
+  // Move to the character just before startIndex
+  let pos = startIndex - 1;
+
+  // Skip trailing whitespace / newlines before the declaration
+  while (pos >= 0 && (source[pos] === ' ' || source[pos] === '\t' || source[pos] === '\n' || source[pos] === '\r')) {
+    pos--;
+  }
+
+  if (pos < 0) return undefined;
+
+  // ── TypeScript / JavaScript / Java / C++: JSDoc block /** ... */ ────────
+  if (
+    language === 'TypeScript' || language === 'JavaScript' ||
+    language === 'Java' || language === 'C++'
+  ) {
+    // Expect closing */ of a JSDoc block
+    if (source[pos] === '/' && pos > 0 && source[pos - 1] === '*') {
+      const closePos = pos - 1; // points at '*' of closing '*/'
+      // Find opening /**
+      const openIdx = source.lastIndexOf('/**', closePos);
+      if (openIdx === -1) return undefined;
+      const inner = source.slice(openIdx + 3, closePos - 0);
+      // Remove leading * on each line, find first non-empty, non-@ line
+      const firstLine = inner
+        .split('\n')
+        .map(l => l.replace(/^\s*\*\s?/, '').trim())
+        .find(l => l.length > 0 && !l.startsWith('@'));
+      return firstLine ?? undefined;
+    }
+    return undefined;
+  }
+
+  // ── Go: // comment lines immediately before ──────────────────────────────
+  if (language === 'Go') {
+    const lines: string[] = [];
+    // Walk backward line by line
+    let lineEnd = pos;
+    while (lineEnd >= 0) {
+      // Find start of this line
+      let lineStart = lineEnd;
+      while (lineStart > 0 && source[lineStart - 1] !== '\n') lineStart--;
+      const line = source.slice(lineStart, lineEnd + 1).trimEnd();
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//')) {
+        lines.unshift(trimmed.slice(2).trim());
+        lineEnd = lineStart - 1;
+        // Skip over the newline
+        while (lineEnd >= 0 && (source[lineEnd] === '\n' || source[lineEnd] === '\r')) lineEnd--;
+      } else {
+        break;
+      }
+    }
+    return lines.find(l => l.length > 0) ?? undefined;
+  }
+
+  // ── Rust: /// doc comment lines immediately before ───────────────────────
+  if (language === 'Rust') {
+    const lines: string[] = [];
+    let lineEnd = pos;
+    while (lineEnd >= 0) {
+      let lineStart = lineEnd;
+      while (lineStart > 0 && source[lineStart - 1] !== '\n') lineStart--;
+      const line = source.slice(lineStart, lineEnd + 1).trimEnd();
+      const trimmed = line.trim();
+      if (trimmed.startsWith('///')) {
+        lines.unshift(trimmed.slice(3).trim());
+        lineEnd = lineStart - 1;
+        while (lineEnd >= 0 && (source[lineEnd] === '\n' || source[lineEnd] === '\r')) lineEnd--;
+      } else {
+        break;
+      }
+    }
+    return lines.find(l => l.length > 0) ?? undefined;
+  }
+
+  // ── Ruby: # comment lines immediately before ─────────────────────────────
+  if (language === 'Ruby') {
+    const lines: string[] = [];
+    let lineEnd = pos;
+    while (lineEnd >= 0) {
+      let lineStart = lineEnd;
+      while (lineStart > 0 && source[lineStart - 1] !== '\n') lineStart--;
+      const line = source.slice(lineStart, lineEnd + 1).trimEnd();
+      const trimmed = line.trim();
+      if (trimmed.startsWith('#')) {
+        lines.unshift(trimmed.slice(1).trim());
+        lineEnd = lineStart - 1;
+        while (lineEnd >= 0 && (source[lineEnd] === '\n' || source[lineEnd] === '\r')) lineEnd--;
+      } else {
+        break;
+      }
+    }
+    return lines.find(l => l.length > 0) ?? undefined;
+  }
+
+  return undefined;
+}
+
+/**
+ * Extract the function declaration (signature without body) from
+ * `source.slice(startIndex, endIndex)`.
+ *
+ * Strategy:
+ * - TS/JS/Java/C++/Go/Rust/Ruby: take everything up to the first `{` at depth 0
+ * - Python: take everything up to the first `:` that ends the `def` line
+ *
+ * Whitespace is normalized (multiple spaces/newlines → single space).
+ * Limited to 300 characters max.
+ */
+function extractDeclaration(
+  source: string,
+  startIndex: number,
+  endIndex: number,
+  language: string
+): string {
+  const slice = source.slice(startIndex, Math.min(endIndex, startIndex + 1500));
+
+  let decl: string;
+
+  if (language === 'Python') {
+    // Take up to (not including) the first `:` that ends the def line
+    // We scan for `:` while tracking parenthesis depth to avoid matching
+    // colons inside type annotations (e.g., def f(x: int) -> dict[str, int]:)
+    let depth = 0;
+    let end = -1;
+    for (let i = 0; i < slice.length; i++) {
+      const ch = slice[i];
+      if (ch === '(' || ch === '[' || ch === '{') depth++;
+      else if (ch === ')' || ch === ']' || ch === '}') depth--;
+      else if (ch === ':' && depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    decl = end !== -1 ? slice.slice(0, end) : slice.slice(0, 300);
+  } else {
+    // Find first `{` at brace depth 0
+    let depth = 0;
+    let end = -1;
+    for (let i = 0; i < slice.length; i++) {
+      const ch = slice[i];
+      if (ch === '{') {
+        if (depth === 0) { end = i; break; }
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+      }
+    }
+    decl = end !== -1 ? slice.slice(0, end) : slice.slice(0, 300);
+  }
+
+  // Normalize whitespace
+  return decl.replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+
+// ============================================================================
 // TYPESCRIPT EXTRACTOR
 // ============================================================================
 
@@ -261,13 +535,14 @@ const TS_CALL_QUERY = `
   (call_expression
     function: [(identifier) @call.name
                (member_expression
+                 object: (identifier) @call.object
                  property: (property_identifier) @call.name)]) @call.node
 `;
 
 async function extractTSGraph(
   filePath: string,
   content: string
-): Promise<{ nodes: FunctionNode[]; rawEdges: Array<{ callerId: string; calleeName: string; line: number }> }> {
+): Promise<{ nodes: FunctionNode[]; rawEdges: RawEdge[] }> {
   const { parser, lang } = await getTSParser();
   const tree = (parser as Parser).parse(content);
 
@@ -317,20 +592,23 @@ async function extractTSGraph(
       endIndex: fnNode.endIndex,
       fanIn: 0,
       fanOut: 0,
+      docstring: extractDocstringBefore(content, fnNode.startIndex, 'TypeScript'),
+      signature: extractDeclaration(content, fnNode.startIndex, fnNode.endIndex, 'TypeScript'),
     });
   }
 
   // --- Extract calls ---
-  const rawEdges: Array<{ callerId: string; calleeName: string; line: number }> = [];
+  const rawEdges: RawEdge[] = [];
   const callMatches = callQuery.matches(tree.rootNode);
 
   for (const match of callMatches) {
     const nameCapture = match.captures.find(c => c.name === 'call.name');
     const nodeCapture = match.captures.find(c => c.name === 'call.node');
+    const objectCapture = match.captures.find(c => c.name === 'call.object');
     if (!nameCapture || !nodeCapture) continue;
 
     const calleeName = nameCapture.node.text;
-    if (IGNORED_CALLEES.has(calleeName)) continue;
+    if (isIgnoredCallee(calleeName)) continue;
 
     const callPos = nodeCapture.node.startIndex;
     const caller = findEnclosingFunction(nodes, callPos);
@@ -340,6 +618,7 @@ async function extractTSGraph(
       callerId: caller.id,
       calleeName,
       line: nodeCapture.node.startPosition.row + 1,
+      calleeObject: objectCapture?.node.text,
     });
   }
 
@@ -385,7 +664,7 @@ const PY_METHOD_CALL_QUERY = `
 async function extractPyGraph(
   filePath: string,
   content: string
-): Promise<{ nodes: FunctionNode[]; rawEdges: Array<{ callerId: string; calleeName: string; line: number }> }> {
+): Promise<{ nodes: FunctionNode[]; rawEdges: RawEdge[] }> {
   const { parser, lang } = await getPyParser();
   const tree = (parser as Parser).parse(content);
 
@@ -441,11 +720,13 @@ async function extractPyGraph(
       endIndex: fnNode.endIndex,
       fanIn: 0,
       fanOut: 0,
+      docstring: extractDocstringBefore(content, fnNode.startIndex, 'Python'),
+      signature: extractDeclaration(content, fnNode.startIndex, fnNode.endIndex, 'Python'),
     });
   }
 
   // --- Extract calls ---
-  const rawEdges: Array<{ callerId: string; calleeName: string; line: number }> = [];
+  const rawEdges: RawEdge[] = [];
 
   const directCallQuery = new Parser.Query(lang as unknown as Parser.Language, PY_DIRECT_CALL_QUERY);
   const methodCallQuery = new Parser.Query(lang as unknown as Parser.Language, PY_METHOD_CALL_QUERY);
@@ -457,7 +738,7 @@ async function extractPyGraph(
     if (!nameCapture || !nodeCapture) continue;
 
     const calleeName = nameCapture.node.text;
-    if (IGNORED_CALLEES.has(calleeName)) continue;
+    if (isIgnoredCallee(calleeName)) continue;
 
     const callPos = nodeCapture.node.startIndex;
     const caller = findEnclosingFunction(nodes, callPos);
@@ -470,20 +751,15 @@ async function extractPyGraph(
     });
   }
 
-  // Method calls: obj.method() — only resolve self.* and cls.* (internal object methods)
+  // Method calls: obj.method() — capture receiver for type-inference-based resolution
   for (const match of methodCallQuery.matches(tree.rootNode)) {
     const objectCapture = match.captures.find(c => c.name === 'call.object');
     const nameCapture = match.captures.find(c => c.name === 'call.name');
     const nodeCapture = match.captures.find(c => c.name === 'call.node');
     if (!objectCapture || !nameCapture || !nodeCapture) continue;
 
-    const objectName = objectCapture.node.text;
-    // Only track self.method() and cls.method() — external objects like
-    // redis.get(), dict.get(), os.path.join() would create massive false positives
-    if (objectName !== 'self' && objectName !== 'cls') continue;
-
     const calleeName = nameCapture.node.text;
-    if (IGNORED_CALLEES.has(calleeName)) continue;
+    if (isIgnoredCallee(calleeName)) continue;
 
     const callPos = nodeCapture.node.startIndex;
     const caller = findEnclosingFunction(nodes, callPos);
@@ -493,6 +769,7 @@ async function extractPyGraph(
       callerId: caller.id,
       calleeName,
       line: nodeCapture.node.startPosition.row + 1,
+      calleeObject: objectCapture.node.text,
     });
   }
 
@@ -517,13 +794,14 @@ const GO_CALL_QUERY = `
 
   (call_expression
     function: (selector_expression
+      operand: (identifier) @call.object
       field: (field_identifier) @call.name)) @call.node
 `;
 
 async function extractGoGraph(
   filePath: string,
   content: string
-): Promise<{ nodes: FunctionNode[]; rawEdges: Array<{ callerId: string; calleeName: string; line: number }> }> {
+): Promise<{ nodes: FunctionNode[]; rawEdges: RawEdge[] }> {
   const { parser, lang } = await getGoParser();
   const tree = (parser as Parser).parse(content);
 
@@ -559,22 +837,25 @@ async function extractGoGraph(
       startIndex: fnNode.startIndex,
       endIndex: fnNode.endIndex,
       fanIn: 0, fanOut: 0,
+      docstring: extractDocstringBefore(content, fnNode.startIndex, 'Go'),
+      signature: extractDeclaration(content, fnNode.startIndex, fnNode.endIndex, 'Go'),
     });
   }
 
-  const rawEdges: Array<{ callerId: string; calleeName: string; line: number }> = [];
+  const rawEdges: RawEdge[] = [];
   for (const match of callQuery.matches(tree.rootNode)) {
     const nameCapture = match.captures.find(c => c.name === 'call.name');
     const nodeCapture = match.captures.find(c => c.name === 'call.node');
+    const objectCapture = match.captures.find(c => c.name === 'call.object');
     if (!nameCapture || !nodeCapture) continue;
 
     const calleeName = nameCapture.node.text;
-    if (IGNORED_CALLEES.has(calleeName)) continue;
+    if (isIgnoredCallee(calleeName)) continue;
 
     const caller = findEnclosingFunction(nodes, nodeCapture.node.startIndex);
     if (!caller) continue;
 
-    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1 });
+    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1, calleeObject: objectCapture?.node.text });
   }
 
   return { nodes, rawEdges };
@@ -595,13 +876,14 @@ const RUST_CALL_QUERY = `
 
   (call_expression
     function: (field_expression
+      value: (identifier) @call.object
       field: (field_identifier) @call.name)) @call.node
 `;
 
 async function extractRustGraph(
   filePath: string,
   content: string
-): Promise<{ nodes: FunctionNode[]; rawEdges: Array<{ callerId: string; calleeName: string; line: number }> }> {
+): Promise<{ nodes: FunctionNode[]; rawEdges: RawEdge[] }> {
   const { parser, lang } = await getRustParser();
   const tree = (parser as Parser).parse(content);
 
@@ -641,22 +923,25 @@ async function extractRustGraph(
       startIndex: fnNode.startIndex,
       endIndex: fnNode.endIndex,
       fanIn: 0, fanOut: 0,
+      docstring: extractDocstringBefore(content, fnNode.startIndex, 'Rust'),
+      signature: extractDeclaration(content, fnNode.startIndex, fnNode.endIndex, 'Rust'),
     });
   }
 
-  const rawEdges: Array<{ callerId: string; calleeName: string; line: number }> = [];
+  const rawEdges: RawEdge[] = [];
   for (const match of callQuery.matches(tree.rootNode)) {
     const nameCapture = match.captures.find(c => c.name === 'call.name');
     const nodeCapture = match.captures.find(c => c.name === 'call.node');
+    const objectCapture = match.captures.find(c => c.name === 'call.object');
     if (!nameCapture || !nodeCapture) continue;
 
     const calleeName = nameCapture.node.text;
-    if (IGNORED_CALLEES.has(calleeName)) continue;
+    if (isIgnoredCallee(calleeName)) continue;
 
     const caller = findEnclosingFunction(nodes, nodeCapture.node.startIndex);
     if (!caller) continue;
 
-    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1 });
+    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1, calleeObject: objectCapture?.node.text });
   }
 
   return { nodes, rawEdges };
@@ -677,6 +962,10 @@ const RUBY_FN_QUERY = `
 // Explicit calls: fetch(), obj.method()
 const RUBY_CALL_QUERY = `
   (call
+    receiver: (identifier) @call.object
+    method: (identifier) @call.name) @call.node
+
+  (call
     method: (identifier) @call.name) @call.node
 `;
 
@@ -691,7 +980,7 @@ const RUBY_BAREWORD_QUERY = `
 async function extractRubyGraph(
   filePath: string,
   content: string
-): Promise<{ nodes: FunctionNode[]; rawEdges: Array<{ callerId: string; calleeName: string; line: number }> }> {
+): Promise<{ nodes: FunctionNode[]; rawEdges: RawEdge[] }> {
   const { parser, lang } = await getRubyParser();
   const tree = (parser as Parser).parse(content);
 
@@ -728,24 +1017,27 @@ async function extractRubyGraph(
       startIndex: fnNode.startIndex,
       endIndex: fnNode.endIndex,
       fanIn: 0, fanOut: 0,
+      docstring: extractDocstringBefore(content, fnNode.startIndex, 'Ruby'),
+      signature: extractDeclaration(content, fnNode.startIndex, fnNode.endIndex, 'Ruby'),
     });
   }
 
-  const rawEdges: Array<{ callerId: string; calleeName: string; line: number }> = [];
+  const rawEdges: RawEdge[] = [];
 
   // Explicit calls: fetch(), obj.method()
   for (const match of callQuery.matches(tree.rootNode)) {
     const nameCapture = match.captures.find(c => c.name === 'call.name');
     const nodeCapture = match.captures.find(c => c.name === 'call.node');
+    const objectCapture = match.captures.find(c => c.name === 'call.object');
     if (!nameCapture || !nodeCapture) continue;
 
     const calleeName = nameCapture.node.text;
-    if (IGNORED_CALLEES.has(calleeName)) continue;
+    if (isIgnoredCallee(calleeName)) continue;
 
     const caller = findEnclosingFunction(nodes, nodeCapture.node.startIndex);
     if (!caller) continue;
 
-    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1 });
+    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1, calleeObject: objectCapture?.node.text });
   }
 
   // Bareword calls: fetch (no parens) — identifier at statement level
@@ -754,7 +1046,7 @@ async function extractRubyGraph(
     if (!nameCapture) continue;
 
     const calleeName = nameCapture.node.text;
-    if (IGNORED_CALLEES.has(calleeName)) continue;
+    if (isIgnoredCallee(calleeName)) continue;
 
     const caller = findEnclosingFunction(nodes, nameCapture.node.startIndex);
     if (!caller) continue;
@@ -779,13 +1071,17 @@ const JAVA_FN_QUERY = `
 
 const JAVA_CALL_QUERY = `
   (method_invocation
+    object: (identifier) @call.object
+    name: (identifier) @call.name) @call.node
+
+  (method_invocation
     name: (identifier) @call.name) @call.node
 `;
 
 async function extractJavaGraph(
   filePath: string,
   content: string
-): Promise<{ nodes: FunctionNode[]; rawEdges: Array<{ callerId: string; calleeName: string; line: number }> }> {
+): Promise<{ nodes: FunctionNode[]; rawEdges: RawEdge[] }> {
   const { parser, lang } = await getJavaParser();
   const tree = (parser as Parser).parse(content);
 
@@ -822,22 +1118,25 @@ async function extractJavaGraph(
       startIndex: fnNode.startIndex,
       endIndex: fnNode.endIndex,
       fanIn: 0, fanOut: 0,
+      docstring: extractDocstringBefore(content, fnNode.startIndex, 'Java'),
+      signature: extractDeclaration(content, fnNode.startIndex, fnNode.endIndex, 'Java'),
     });
   }
 
-  const rawEdges: Array<{ callerId: string; calleeName: string; line: number }> = [];
+  const rawEdges: RawEdge[] = [];
   for (const match of callQuery.matches(tree.rootNode)) {
     const nameCapture = match.captures.find(c => c.name === 'call.name');
     const nodeCapture = match.captures.find(c => c.name === 'call.node');
+    const objectCapture = match.captures.find(c => c.name === 'call.object');
     if (!nameCapture || !nodeCapture) continue;
 
     const calleeName = nameCapture.node.text;
-    if (IGNORED_CALLEES.has(calleeName)) continue;
+    if (isIgnoredCallee(calleeName)) continue;
 
     const caller = findEnclosingFunction(nodes, nodeCapture.node.startIndex);
     if (!caller) continue;
 
-    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1 });
+    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1, calleeObject: objectCapture?.node.text });
   }
 
   return { nodes, rawEdges };
@@ -884,20 +1183,24 @@ const CPP_FN_QUALIFIED_QUERY = `
         name: (identifier) @fn.name))) @fn.node
 `;
 
-/** Function calls: foo() and obj.method() / ptr->method() */
-const CPP_CALL_QUERY = `
+/** Plain function calls: foo() */
+const CPP_CALL_DIRECT_QUERY = `
   (call_expression
     function: (identifier) @call.name) @call.node
+`;
 
+/** Member calls: obj.method() and ptr->method() — captures receiver */
+const CPP_CALL_MEMBER_QUERY = `
   (call_expression
     function: (field_expression
+      argument: (identifier) @call.object
       field: (field_identifier) @call.name)) @call.node
 `;
 
 async function extractCppGraph(
   filePath: string,
   content: string
-): Promise<{ nodes: FunctionNode[]; rawEdges: Array<{ callerId: string; calleeName: string; line: number }> }> {
+): Promise<{ nodes: FunctionNode[]; rawEdges: RawEdge[] }> {
   const { parser, lang } = await getCppParser();
   const tree = (parser as Parser).parse(content);
 
@@ -914,6 +1217,8 @@ async function extractCppGraph(
       seen.add(nameCapture.node.startIndex);
 
       const name = nameCapture.node.text;
+      // Skip ALL_CAPS names — these are almost certainly macros, not functions
+      if (/^[A-Z][A-Z0-9_]{2,}$/.test(name)) continue;
       const fnNode = nodeCapture.node;
 
       // Find enclosing class (inline method defined inside class body)
@@ -950,18 +1255,22 @@ async function extractCppGraph(
         startIndex: fnNode.startIndex,
         endIndex: fnNode.endIndex,
         fanIn: 0, fanOut: 0,
+        docstring: extractDocstringBefore(content, fnNode.startIndex, 'C++'),
+        signature: extractDeclaration(content, fnNode.startIndex, fnNode.endIndex, 'C++'),
       });
     }
   }
 
-  const rawEdges: Array<{ callerId: string; calleeName: string; line: number }> = [];
-  for (const match of safeQuery(lang, CPP_CALL_QUERY, tree.rootNode)) {
+  const rawEdges: RawEdge[] = [];
+
+  // Plain calls: foo()
+  for (const match of safeQuery(lang, CPP_CALL_DIRECT_QUERY, tree.rootNode)) {
     const nameCapture = match.captures.find(c => c.name === 'call.name');
     const nodeCapture = match.captures.find(c => c.name === 'call.node');
     if (!nameCapture || !nodeCapture) continue;
 
     const calleeName = nameCapture.node.text;
-    if (IGNORED_CALLEES.has(calleeName)) continue;
+    if (isIgnoredCallee(calleeName)) continue;
 
     const caller = findEnclosingFunction(nodes, nodeCapture.node.startIndex);
     if (!caller) continue;
@@ -969,7 +1278,276 @@ async function extractCppGraph(
     rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1 });
   }
 
+  // Member calls: obj.method() / ptr->method()
+  for (const match of safeQuery(lang, CPP_CALL_MEMBER_QUERY, tree.rootNode)) {
+    const nameCapture = match.captures.find(c => c.name === 'call.name');
+    const nodeCapture = match.captures.find(c => c.name === 'call.node');
+    const objectCapture = match.captures.find(c => c.name === 'call.object');
+    if (!nameCapture || !nodeCapture) continue;
+
+    const calleeName = nameCapture.node.text;
+    if (isIgnoredCallee(calleeName)) continue;
+
+    const caller = findEnclosingFunction(nodes, nodeCapture.node.startIndex);
+    if (!caller) continue;
+
+    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1, calleeObject: objectCapture?.node.text });
+  }
+
   return { nodes, rawEdges };
+}
+
+// ============================================================================
+// CLASS HIERARCHY EXTRACTION
+// ============================================================================
+
+/**
+ * Extract parent class / interface relationships from source files using
+ * tree-sitter.  Returns a map from `filePath::ClassName` → relationship info.
+ * Uses safeQuery so any query that doesn't match a grammar version is silently
+ * skipped rather than crashing.
+ */
+async function extractClassRelationships(
+  files: Array<{ path: string; content: string; language: string }>,
+): Promise<Map<string, { parentClasses: string[]; interfaces: string[] }>> {
+  const out = new Map<string, { parentClasses: string[]; interfaces: string[] }>();
+
+  // Helper to merge into map keyed by `filePath::ClassName`
+  function merge(
+    filePath: string,
+    className: string,
+    parents: string[],
+    ifaces: string[],
+  ) {
+    const key = `${filePath}::${className}`;
+    const existing = out.get(key) ?? { parentClasses: [], interfaces: [] };
+    for (const p of parents) if (!existing.parentClasses.includes(p)) existing.parentClasses.push(p);
+    for (const i of ifaces)  if (!existing.interfaces.includes(i))   existing.interfaces.push(i);
+    out.set(key, existing);
+  }
+
+  for (const file of files) {
+    try {
+      if (file.language === 'TypeScript' || file.language === 'JavaScript') {
+        const { parser, lang } = await getTSParser();
+        const tree = (parser as Parser).parse(file.content);
+
+        // class Foo extends Bar implements Baz, Qux
+        const EXTENDS_Q = `
+          (class_declaration
+            name: (type_identifier) @cls
+            (class_heritage (extends_clause value: (identifier) @parent)))`;
+        const IMPLEMENTS_Q = `
+          (class_declaration
+            name: (type_identifier) @cls
+            (class_heritage (implements_clause (type_identifier) @iface)))`;
+
+        for (const m of safeQuery(lang, EXTENDS_Q, tree.rootNode)) {
+          const cls    = m.captures.find(c => c.name === 'cls')?.node.text;
+          const parent = m.captures.find(c => c.name === 'parent')?.node.text;
+          if (cls && parent) merge(file.path, cls, [parent], []);
+        }
+        for (const m of safeQuery(lang, IMPLEMENTS_Q, tree.rootNode)) {
+          const cls  = m.captures.find(c => c.name === 'cls')?.node.text;
+          const iface = m.captures.find(c => c.name === 'iface')?.node.text;
+          if (cls && iface) merge(file.path, cls, [], [iface]);
+        }
+
+      } else if (file.language === 'Python') {
+        const { parser, lang } = await getPyParser();
+        const tree = (parser as Parser).parse(file.content);
+
+        // class Foo(Bar, Baz):
+        const Q = `
+          (class_definition
+            name: (identifier) @cls
+            superclasses: (argument_list (identifier) @parent))`;
+        for (const m of safeQuery(lang, Q, tree.rootNode)) {
+          const cls    = m.captures.find(c => c.name === 'cls')?.node.text;
+          const parent = m.captures.find(c => c.name === 'parent')?.node.text;
+          if (cls && parent && parent !== 'object') merge(file.path, cls, [parent], []);
+        }
+
+      } else if (file.language === 'Java') {
+        const { parser, lang } = await getJavaParser();
+        const tree = (parser as Parser).parse(file.content);
+
+        const EXTENDS_Q = `
+          (class_declaration
+            name: (identifier) @cls
+            (superclass (type_identifier) @parent))`;
+        const IMPLEMENTS_Q = `
+          (class_declaration
+            name: (identifier) @cls
+            (super_interfaces (type_list (type_identifier) @iface)))`;
+
+        for (const m of safeQuery(lang, EXTENDS_Q, tree.rootNode)) {
+          const cls    = m.captures.find(c => c.name === 'cls')?.node.text;
+          const parent = m.captures.find(c => c.name === 'parent')?.node.text;
+          if (cls && parent) merge(file.path, cls, [parent], []);
+        }
+        for (const m of safeQuery(lang, IMPLEMENTS_Q, tree.rootNode)) {
+          const cls  = m.captures.find(c => c.name === 'cls')?.node.text;
+          const iface = m.captures.find(c => c.name === 'iface')?.node.text;
+          if (cls && iface) merge(file.path, cls, [], [iface]);
+        }
+
+      } else if (file.language === 'C++') {
+        const { parser, lang } = await getCppParser();
+        const tree = (parser as Parser).parse(file.content);
+
+        // class Foo : public Bar
+        const Q = `
+          (class_specifier
+            name: (type_identifier) @cls
+            (base_class_clause (type_identifier) @parent))`;
+        for (const m of safeQuery(lang, Q, tree.rootNode)) {
+          const cls    = m.captures.find(c => c.name === 'cls')?.node.text;
+          const parent = m.captures.find(c => c.name === 'parent')?.node.text;
+          if (cls && parent) merge(file.path, cls, [parent], []);
+        }
+
+      } else if (file.language === 'Ruby') {
+        const { parser, lang } = await getRubyParser();
+        const tree = (parser as Parser).parse(file.content);
+
+        // class Foo < Bar
+        const Q = `
+          (class
+            name: (constant) @cls
+            superclass: (superclass (constant) @parent))`;
+        for (const m of safeQuery(lang, Q, tree.rootNode)) {
+          const cls    = m.captures.find(c => c.name === 'cls')?.node.text;
+          const parent = m.captures.find(c => c.name === 'parent')?.node.text;
+          if (cls && parent) merge(file.path, cls, [parent], []);
+        }
+
+      } else if (file.language === 'Go') {
+        // Go has no inheritance but has struct embedding; treat as 'embeds' edges
+        const { parser, lang } = await getGoParser();
+        const tree = (parser as Parser).parse(file.content);
+
+        // Anonymous (embedded) field in a struct: type Foo struct { Bar }
+        const Q = `
+          (type_declaration
+            (type_spec
+              name: (type_identifier) @cls
+              type: (struct_type
+                (field_declaration_list
+                  (field_declaration
+                    type: (type_identifier) @embedded)))))`;
+        for (const m of safeQuery(lang, Q, tree.rootNode)) {
+          const cls      = m.captures.find(c => c.name === 'cls')?.node.text;
+          const embedded = m.captures.find(c => c.name === 'embedded')?.node.text;
+          if (cls && embedded) {
+            const key = `${file.path}::${cls}`;
+            const existing = out.get(key) ?? { parentClasses: [], interfaces: [] };
+            // Store Go embeds as parentClasses (will be tagged as 'embeds' when building edges)
+            if (!existing.parentClasses.includes(embedded)) existing.parentClasses.push(embedded);
+            out.set(key, existing);
+          }
+        }
+      }
+      // Rust: trait impls are structural but less like OOP inheritance; skip for now
+    } catch {
+      // Best-effort; skip unparseable files
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Build ClassNode[] from the set of extracted FunctionNodes (which carry
+ * `className`), enriched with inheritance data from `extractClassRelationships`.
+ *
+ * Functions without a className are grouped by file into synthetic module nodes
+ * (e.g. `[call-graph]`) so every function appears in the class graph, not just
+ * class methods. This is essential for codebases that use mostly module-level
+ * exports rather than OOP classes.
+ */
+function buildClassNodes(
+  allNodes: Map<string, FunctionNode>,
+  relationships: Map<string, { parentClasses: string[]; interfaces: string[] }>,
+): { classes: ClassNode[]; inheritanceEdges: InheritanceEdge[] } {
+  // Group FunctionNodes by (filePath, className).
+  // Free functions use a synthetic "[basename]" module name keyed by filePath alone.
+  const groups = new Map<string, {
+    name: string; filePath: string; language: string; isModule: boolean; methods: FunctionNode[]
+  }>();
+
+  for (const fn of allNodes.values()) {
+    let key: string;
+    let name: string;
+    let isModule: boolean;
+    if (fn.className) {
+      key = `${fn.filePath}::${fn.className}`;
+      name = fn.className;
+      isModule = false;
+    } else {
+      // Synthetic module node — one per file
+      key = fn.filePath;
+      const base = fn.filePath.split('/').pop() ?? fn.filePath;
+      name = '[' + base.replace(/\.[^.]+$/, '') + ']';
+      isModule = true;
+    }
+    if (!groups.has(key)) {
+      groups.set(key, { name, filePath: fn.filePath, language: fn.language, isModule, methods: [] });
+    }
+    groups.get(key)!.methods.push(fn);
+  }
+
+  // Build ClassNode[]
+  const classMap = new Map<string, ClassNode>();
+  for (const [id, g] of groups) {
+    const rel = relationships.get(id) ?? { parentClasses: [], interfaces: [] };
+    const cls: ClassNode = {
+      id,
+      name: g.name,
+      filePath: g.filePath,
+      language: g.language,
+      parentClasses: rel.parentClasses,
+      interfaces: rel.interfaces,
+      methodIds: g.methods.map(m => m.id),
+      fanIn:  g.methods.reduce((s, m) => s + m.fanIn, 0),
+      fanOut: g.methods.reduce((s, m) => s + m.fanOut, 0),
+      isModule: g.isModule,
+    };
+    classMap.set(id, cls);
+  }
+
+  // Build InheritanceEdge[] — only when both parent and child are in our graph
+  // Parent lookup: match by class name across all ClassNodes (first match wins)
+  const byName = new Map<string, ClassNode>();
+  for (const cls of classMap.values()) {
+    if (!byName.has(cls.name)) byName.set(cls.name, cls);
+  }
+
+  const inheritanceEdges: InheritanceEdge[] = [];
+  const seenEdges = new Set<string>();
+
+  for (const cls of classMap.values()) {
+    for (const parentName of cls.parentClasses) {
+      const parent = byName.get(parentName);
+      if (!parent) continue;
+      const edgeId = `${parent.id}->${cls.id}`;
+      if (seenEdges.has(edgeId)) continue;
+      seenEdges.add(edgeId);
+      // Go embedding vs OOP inheritance
+      const kind = cls.language === 'Go' ? 'embeds' : 'extends';
+      inheritanceEdges.push({ id: edgeId, parentId: parent.id, childId: cls.id, kind });
+    }
+    for (const ifaceName of cls.interfaces) {
+      const parent = byName.get(ifaceName);
+      if (!parent) continue;
+      const edgeId = `${parent.id}->${cls.id}`;
+      if (seenEdges.has(edgeId)) continue;
+      seenEdges.add(edgeId);
+      inheritanceEdges.push({ id: edgeId, parentId: parent.id, childId: cls.id, kind: 'implements' });
+    }
+  }
+
+  return { classes: Array.from(classMap.values()), inheritanceEdges };
 }
 
 // ============================================================================
@@ -980,21 +1558,22 @@ export class CallGraphBuilder {
   /**
    * Build a call graph from a list of source files.
    *
-   * @param files     Source files with path, content, and language
-   * @param layers    Optional layer map { layerName: [path prefix, ...] }
-   *                  e.g. { api: ['routes/', 'controllers/'], storage: ['models/'] }
+   * @param files       Source files with path, content, and language
+   * @param layers      Optional layer map { layerName: [path prefix, ...] }
+   * @param importMap   Optional per-file import map (from ImportResolverBridge)
    */
   async build(
     files: Array<{ path: string; content: string; language: string }>,
-    layers?: Record<string, string[]>
+    layers?: Record<string, string[]>,
+    importMap?: ImportMap,
   ): Promise<CallGraphResult> {
     const allNodes = new Map<string, FunctionNode>();
-    const allRawEdges: Array<{ callerId: string; calleeName: string; line: number }> = [];
+    const allRawEdges: RawEdge[] = [];
 
     // Pass 1: Extract nodes and raw edges from each file
     for (const file of files) {
       try {
-        let result: { nodes: FunctionNode[]; rawEdges: Array<{ callerId: string; calleeName: string; line: number }> };
+        let result: { nodes: FunctionNode[]; rawEdges: RawEdge[] };
 
         if (file.language === 'Python') {
           result = await extractPyGraph(file.path, file.content);
@@ -1026,35 +1605,109 @@ export class CallGraphBuilder {
       }
     }
 
-    // Pass 2: Resolve raw edges — find callee FunctionNode by name
-    const nodesByName = new Map<string, FunctionNode[]>();
-    for (const node of allNodes.values()) {
-      const list = nodesByName.get(node.name) ?? [];
-      list.push(node);
-      nodesByName.set(node.name, list);
-    }
+    // Pass 2: Resolve raw edges — multi-strategy resolution
+    const trie = new FunctionRegistryTrie();
+    for (const node of allNodes.values()) trie.insert(node);
+
+    // Build per-function-body content slices for type inference (keyed by functionId)
+    const fileContents = new Map<string, string>();
+    for (const file of files) fileContents.set(file.path, file.content);
 
     const edges: CallEdge[] = [];
     for (const raw of allRawEdges) {
-      const candidates = nodesByName.get(raw.calleeName);
-      if (!candidates || candidates.length === 0) continue; // external call
+      const callerNode = allNodes.get(raw.callerId);
+      if (!callerNode) continue;
 
-      let calleeNode: FunctionNode;
-      if (candidates.length === 1) {
-        calleeNode = candidates[0];
-      } else {
-        // Prefer same file as caller
-        const callerNode = allNodes.get(raw.callerId);
-        const sameFile = candidates.find(c => c.filePath === callerNode?.filePath);
-        calleeNode = sameFile ?? candidates[0];
+      let calleeNode: FunctionNode | undefined;
+      let confidence: EdgeConfidence = 'name_only';
+
+      // Strategy 1 — self/cls intra-class (Python self.*, cls.* or same-class method)
+      if (raw.calleeObject === 'self' || raw.calleeObject === 'cls') {
+        if (callerNode.className) {
+          const candidates = trie.findByQualifiedName(callerNode.className, raw.calleeName);
+          if (candidates.length > 0) { calleeNode = candidates[0]; confidence = 'self_cls'; }
+        }
       }
+
+      // Strategy 2 — type inference on receiver variable
+      if (!calleeNode && raw.calleeObject) {
+        const fileContent = fileContents.get(callerNode.filePath);
+        if (fileContent) {
+          const bodySlice = fileContent.slice(callerNode.startIndex, callerNode.endIndex);
+          const inferredTypes = inferTypesFromSource(bodySlice, callerNode.language);
+          const resolved = resolveViaTypeInference(raw.calleeObject, raw.calleeName, inferredTypes, trie);
+          if (resolved) { calleeNode = resolved; confidence = 'type_inference'; }
+        }
+      }
+
+      // Strategy 3 — import resolution (TS/JS/Python/Go/Rust/Ruby/Java)
+      if (!calleeNode && importMap) {
+        const importedFile = importMap.get(callerNode.filePath)?.get(raw.calleeName)
+          ?? (raw.calleeObject ? importMap.get(callerNode.filePath)?.get(raw.calleeObject) : undefined);
+        if (importedFile) {
+          const candidates = trie.findBySimpleName(raw.calleeName).filter(n => n.filePath.startsWith(importedFile));
+          if (candidates.length > 0) { calleeNode = candidates[0]; confidence = 'import'; }
+        }
+      }
+
+      // Strategy 4 — same-file preference (only for calls without a typed receiver)
+      // When a receiver is explicitly present but unresolvable (e.g. redis_client.get()),
+      // skip name_only fallback to avoid false-positive edges.
+      if (!calleeNode && !raw.calleeObject) {
+        const candidates = trie.findBySimpleName(raw.calleeName);
+        if (candidates.length === 0) continue; // external call, skip
+        const sameFile = candidates.find(c => c.filePath === callerNode.filePath);
+        if (sameFile) { calleeNode = sameFile; confidence = 'same_file'; }
+        else { calleeNode = candidates[0]; confidence = 'name_only'; }
+      }
+
+      if (!calleeNode) continue;
 
       edges.push({
         callerId: raw.callerId,
         calleeId: calleeNode.id,
         calleeName: raw.calleeName,
         line: raw.line,
+        confidence,
       });
+    }
+
+    // Pass 2b: HTTP cross-language edges (JS/TS caller → Python handler)
+    try {
+      const filePaths = files.map(f => f.path);
+      const { edges: httpEdges } = await extractAllHttpEdges(filePaths);
+      for (const he of httpEdges) {
+        // Find callee: handler function by name in handlerFile
+        const calleeNode = trie.findBySimpleName(he.route.handlerName)
+          .find(n => n.filePath === he.handlerFile);
+        if (!calleeNode) continue;
+
+        // Find caller: any function in callerFile that encloses the HTTP call's line
+        const callerContent = fileContents.get(he.callerFile);
+        const callerNode = callerContent
+          ? (() => {
+              let offset = 0;
+              const lines = callerContent.split('\n');
+              for (let i = 0; i < he.call.line - 1 && i < lines.length; i++) {
+                offset += lines[i].length + 1;
+              }
+              const candidates = Array.from(allNodes.values())
+                .filter(n => n.filePath === he.callerFile);
+              return findEnclosingFunction(candidates, offset);
+            })()
+          : undefined;
+        if (!callerNode) continue;
+
+        edges.push({
+          callerId: callerNode.id,
+          calleeId: calleeNode.id,
+          calleeName: he.route.handlerName,
+          line: he.call.line,
+          confidence: 'http_endpoint',
+        });
+      }
+    } catch {
+      // HTTP edge extraction is best-effort; don't fail the whole build
     }
 
     // Pass 3: Calculate fanIn / fanOut (count unique caller→callee pairs, not call sites)
@@ -1088,9 +1741,15 @@ export class CallGraphBuilder {
     const totalFanIn = nodes.reduce((s, n) => s + n.fanIn, 0);
     const totalFanOut = nodes.reduce((s, n) => s + n.fanOut, 0);
 
+    // Pass 5: Build class hierarchy (inheritance + grouping)
+    const relationships = await extractClassRelationships(files);
+    const { classes, inheritanceEdges } = buildClassNodes(allNodes, relationships);
+
     return {
       nodes: allNodes,
       edges,
+      classes,
+      inheritanceEdges,
       hubFunctions,
       entryPoints,
       layerViolations,
@@ -1154,6 +1813,8 @@ export function serializeCallGraph(result: CallGraphResult): SerializedCallGraph
   return {
     nodes: Array.from(result.nodes.values()),
     edges: result.edges,
+    classes: result.classes,
+    inheritanceEdges: result.inheritanceEdges,
     hubFunctions: result.hubFunctions,
     entryPoints: result.entryPoints,
     layerViolations: result.layerViolations,

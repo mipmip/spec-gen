@@ -4,7 +4,7 @@
  * Synthesizes architecture overview from previous analysis results.
  */
 
-import { STAGE5_MAX_TOKENS, STAGE5_HUB_FUNCTIONS_LIMIT, STAGE5_ENTRY_POINTS_LIMIT, STAGE5_VIOLATIONS_LIMIT } from '../../../constants.js';
+import { STAGE5_MAX_TOKENS, STAGE5_HUB_FUNCTIONS_LIMIT, STAGE5_ENTRY_POINTS_LIMIT, STAGE5_VIOLATIONS_LIMIT, STAGE5_REFACTOR_PRIORITIES_LIMIT, STAGE5_CYCLES_LIMIT } from '../../../constants.js';
 import { PROMPTS } from '../prompts.js';
 import type {
   ArchitectureSynthesis,
@@ -17,6 +17,7 @@ import type {
 } from '../../../types/pipeline.js';
 import type { DependencyGraphResult } from '../../analyzer/dependency-graph.js';
 import type { SerializedCallGraph } from '../../analyzer/call-graph.js';
+import type { RefactorReport } from '../../analyzer/refactor-analyzer.js';
 
 export async function runStage5(
   pipeline: PipelineContext,
@@ -25,7 +26,8 @@ export async function runStage5(
   services: ExtractedService[],
   endpoints: ExtractedEndpoint[],
   depGraph?: DependencyGraphResult,
-  callGraph?: SerializedCallGraph
+  callGraph?: SerializedCallGraph,
+  refactorReport?: RefactorReport
 ): Promise<StageResult<ArchitectureSynthesis>> {
   const startTime = Date.now();
 
@@ -52,7 +54,19 @@ ${callGraph.hubFunctions.slice(0, STAGE5_HUB_FUNCTIONS_LIMIT).map(n => `- ${n.na
 ${callGraph.entryPoints.length > 0 ? `\nEntry points (no internal callers — likely public API or CLI handlers):
 ${callGraph.entryPoints.slice(0, STAGE5_ENTRY_POINTS_LIMIT).map(n => `- ${n.name} (${n.filePath}${n.isAsync ? ', async' : ''})`).join('\n')}` : ''}
 ${callGraph.layerViolations.length > 0 ? `\nLayer violations detected:
-${callGraph.layerViolations.slice(0, STAGE5_VIOLATIONS_LIMIT).map(v => `- ${v.reason}`).join('\n')}` : ''}` : ''}`;
+${callGraph.layerViolations.slice(0, STAGE5_VIOLATIONS_LIMIT).map(v => `- ${v.reason}`).join('\n')}` : ''}` : ''}${refactorReport && refactorReport.stats.withIssues > 0 ? `
+
+Structural Issues (${refactorReport.stats.totalFunctions} functions, ${refactorReport.stats.withIssues} with issues):
+${[
+  refactorReport.stats.unreachable > 0 ? `- ${refactorReport.stats.unreachable} unreachable (dead code candidates)` : '',
+  refactorReport.stats.highFanOut > 0 ? `- ${refactorReport.stats.highFanOut} god functions (fanOut ≥ 8)` : '',
+  refactorReport.stats.cyclesDetected > 0 ? `- ${refactorReport.stats.cyclesDetected} dependency cycles (${refactorReport.stats.cycleParticipants} participants)` : '',
+  refactorReport.stats.srpViolations > 0 ? `- ${refactorReport.stats.srpViolations} SRP violations (multi-requirement functions)` : '',
+].filter(Boolean).join('\n')}
+${refactorReport.priorities.length > 0 ? `Top hotspots:
+${refactorReport.priorities.slice(0, STAGE5_REFACTOR_PRIORITIES_LIMIT).map(e => `- ${e.function} (${e.file}): ${e.issues.join(', ')}`).join('\n')}` : ''}${refactorReport.cycles.length > 0 ? `
+Dependency cycles:
+${refactorReport.cycles.slice(0, STAGE5_CYCLES_LIMIT).map(c => `- [${c.size} functions] ${c.participants.slice(0, 4).map(p => p.function).join(' → ')}${c.size > 4 ? ` +${c.size - 4} more` : ''}`).join('\n')}` : ''}` : ''}`;
 
   try {
     const result = await pipeline.llm.completeJSON<ArchitectureSynthesis>({

@@ -760,6 +760,61 @@ describe('SpecGenerationPipeline', () => {
     });
   });
 
+  describe('graphPromptFor', () => {
+    it('returns null for small files with no call graph', () => {
+      const { service: llm } = createMockLLMService();
+      const pipeline = new SpecGenerationPipeline(llm, { outputDir: tempDir });
+      const smallContent = 'const x = 1;\n'.repeat(10); // well under STAGE_CHUNK_MAX_CHARS
+      expect(pipeline.graphPromptFor('src/small.ts', smallContent)).toBeNull();
+    });
+
+    it('returns null when no content provided and no call graph', () => {
+      const { service: llm } = createMockLLMService();
+      const pipeline = new SpecGenerationPipeline(llm, { outputDir: tempDir });
+      expect(pipeline.graphPromptFor('src/file.ts')).toBeNull();
+    });
+
+    it('returns skeleton string for large heavily-commented files with no call graph', () => {
+      const { service: llm } = createMockLLMService();
+      const pipeline = new SpecGenerationPipeline(llm, { outputDir: tempDir });
+      // Build > 8000 chars with >20% comment content (so skeleton achieves ≥20% reduction)
+      // Each funcBlock: short body + long comment block
+      const commentLine = '// A long descriptive comment line that will be stripped by skeleton\n';
+      const commentBlock = commentLine.repeat(15); // ~1050 chars of comments per function
+      // Repeat to exceed STAGE_CHUNK_MAX_CHARS (8000 chars)
+      const largeContent = Array.from({ length: 10 }, (_, i) =>
+        `function fn${i}(x: number): number {\n${commentBlock}  return x + ${i};\n}\n`
+      ).join('\n'); // ~11,500 chars total
+      const result = pipeline.graphPromptFor('src/large.ts', largeContent);
+      // Should use skeleton path (skeleton << original due to stripped comments)
+      expect(result).not.toBeNull();
+      expect(typeof result).toBe('string');
+      if (result) {
+        expect(result).toContain('skeleton');
+      }
+    });
+
+    it('returns null for large files where skeleton does not compress enough', () => {
+      const { service: llm } = createMockLLMService();
+      const pipeline = new SpecGenerationPipeline(llm, { outputDir: tempDir });
+      // Build > 8000 chars with NO comments (skeleton identical to source, no 20% reduction)
+      const funcBlock = 'function doThing(a: number, b: string): void { const x = a + b.length; if (x > 0) { return; } }\n';
+      const largeContent = funcBlock.repeat(100); // ~9400 chars, no comments
+      const result = pipeline.graphPromptFor('src/dense.ts', largeContent);
+      // skeleton ≈ original (no strippable content) → isSkeletonWorthIncluding returns false → null
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('loadStageResult', () => {
+    it('returns null when stage result file does not exist', async () => {
+      const { service: llm } = createMockLLMService();
+      const pipeline = new SpecGenerationPipeline(llm, { outputDir: tempDir });
+      const result = await pipeline.loadStageResult('nonexistent-stage');
+      expect(result).toBeNull();
+    });
+  });
+
   describe('Metadata', () => {
     it('should track pipeline duration', async () => {
       const { service, provider } = createMockLLMService();

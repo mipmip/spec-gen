@@ -15,6 +15,9 @@ import {
   sanitizeMcpError,
   readCachedContext,
   isCacheFresh,
+  loadMappingIndex,
+  specsForFile,
+  functionsForDomain,
 } from './utils.js';
 import {
   SPEC_GEN_DIR,
@@ -186,5 +189,116 @@ describe('isCacheFresh', () => {
 
     const result = await isCacheFresh(tmpDir);
     expect(result).toBe(false);
+  });
+});
+
+// ============================================================================
+// loadMappingIndex
+// ============================================================================
+
+describe('loadMappingIndex', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'mcp-mapping-test-'));
+  });
+
+  it('returns null when mapping.json does not exist', async () => {
+    const result = await loadMappingIndex(tmpDir);
+    expect(result).toBeNull();
+  });
+
+  it('returns indexed MappingIndex when mapping.json is valid', async () => {
+    const dir = join(tmpDir, '.spec-gen', 'analysis');
+    await mkdir(dir, { recursive: true });
+    const mappingData = {
+      mappings: [
+        {
+          requirement: 'User auth',
+          domain: 'auth',
+          specFile: 'openspec/specs/auth/spec.md',
+          functions: [
+            { name: 'login', file: 'src/auth.ts', line: 10, kind: 'function', confidence: 'high' },
+            { name: '*', file: 'src/auth.ts', line: 0, kind: 'wildcard', confidence: 'low' },
+          ],
+        },
+      ],
+    };
+    await writeFile(join(dir, 'mapping.json'), JSON.stringify(mappingData), 'utf-8');
+
+    const result = await loadMappingIndex(tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.entries).toHaveLength(1);
+    expect(result!.byDomain.has('auth')).toBe(true);
+    expect(result!.byFile.has('src/auth.ts')).toBe(true);
+  });
+
+  it('returns null when mapping.json is malformed JSON', async () => {
+    const dir = join(tmpDir, '.spec-gen', 'analysis');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'mapping.json'), 'not valid json', 'utf-8');
+    const result = await loadMappingIndex(tmpDir);
+    expect(result).toBeNull();
+  });
+});
+
+// ============================================================================
+// specsForFile / functionsForDomain
+// ============================================================================
+
+describe('specsForFile', () => {
+  it('returns empty array when file has no mapping entries', () => {
+    const index = { byFile: new Map(), byDomain: new Map(), entries: [] };
+    expect(specsForFile(index, 'src/foo.ts')).toEqual([]);
+  });
+
+  it('returns spec entries for a file', () => {
+    const entry = {
+      requirement: 'Login',
+      service: '',
+      domain: 'auth',
+      specFile: 'openspec/specs/auth/spec.md',
+      functions: [],
+    };
+    const byFile = new Map([['src/auth.ts', [entry]]]);
+    const index = { byFile, byDomain: new Map(), entries: [entry] };
+    const specs = specsForFile(index, 'src/auth.ts');
+    expect(specs).toHaveLength(1);
+    expect(specs[0].domain).toBe('auth');
+    expect(specs[0].requirement).toBe('Login');
+  });
+
+  it('deduplicates entries with same domain+requirement', () => {
+    const entry = { requirement: 'Login', service: '', domain: 'auth', specFile: 'auth.md', functions: [] };
+    const byFile = new Map([['src/auth.ts', [entry, entry]]]);
+    const index = { byFile, byDomain: new Map(), entries: [entry] };
+    const specs = specsForFile(index, 'src/auth.ts');
+    expect(specs).toHaveLength(1);
+  });
+});
+
+describe('functionsForDomain', () => {
+  it('returns empty array when domain has no entries', () => {
+    const index = { byFile: new Map(), byDomain: new Map(), entries: [] };
+    expect(functionsForDomain(index, 'unknown')).toEqual([]);
+  });
+
+  it('returns functions for a domain, skipping wildcard entries', () => {
+    const entry = {
+      requirement: 'Auth flow',
+      service: '',
+      domain: 'auth',
+      specFile: 'auth.md',
+      functions: [
+        { name: 'login', file: 'src/auth.ts', line: 10, kind: 'function', confidence: 'high' },
+        { name: '*', file: 'src/auth.ts', line: 0, kind: 'wildcard', confidence: 'low' },
+      ],
+    };
+    const byDomain = new Map([['auth', [entry]]]);
+    const index = { byFile: new Map(), byDomain, entries: [entry] };
+    const fns = functionsForDomain(index, 'auth');
+    expect(fns).toHaveLength(1);
+    expect(fns[0].name).toBe('login');
+    expect(fns[0].requirement).toBe('Auth flow');
   });
 });

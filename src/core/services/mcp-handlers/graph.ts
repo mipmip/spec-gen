@@ -1,7 +1,8 @@
 /**
  * MCP tool handlers for call-graph analysis:
  * get_call_graph, get_subgraph, analyze_impact, get_critical_hubs,
- * get_leaf_functions, get_low_risk_refactor_candidates, get_god_functions.
+ * get_leaf_functions, get_low_risk_refactor_candidates, get_god_functions,
+ * trace_execution_path.
  */
 
 import { validateDirectory, readCachedContext } from './utils.js';
@@ -31,6 +32,8 @@ import {
   HUB_HIGH_FAN_OUT_THRESHOLD,
   SPEC_GEN_DIR,
   SPEC_GEN_ANALYSIS_SUBDIR,
+  TRACE_PATH_DEFAULT_MAX_DEPTH,
+  TRACE_PATH_MAX_PATHS,
 } from '../../../constants.js';
 import type { SerializedCallGraph, FunctionNode } from '../../analyzer/call-graph.js';
 import { getFileGodFunctions, extractSubgraph } from '../../analyzer/subgraph-extractor.js';
@@ -597,4 +600,180 @@ export async function handleGetGodFunctions(
     });
 
   return { threshold: fanOutThreshold, count: godFunctions.length, godFunctions };
+}
+
+/**
+ * Return the file-level import dependencies for a given file.
+ *
+ * Uses the dependency-graph.json produced by `spec-gen analyze`.
+ * direction:
+ *   "imports"  — files this file depends on (outgoing edges)
+ *   "importedBy" — files that depend on this file (incoming edges)
+ *   "both"     — both directions
+ */
+export async function handleGetFileDependencies(
+  directory: string,
+  filePath: string,
+  direction: 'imports' | 'importedBy' | 'both' = 'both',
+): Promise<unknown> {
+  const absDir = await validateDirectory(directory);
+  const depGraphPath = join(absDir, '.spec-gen', 'analysis', 'dependency-graph.json');
+
+  interface DepEdge {
+    source: string;
+    target: string;
+    importedNames: string[];
+    isTypeOnly: boolean;
+    weight: number;
+  }
+  interface DepNode {
+    id: string;
+    file: { path: string; absolutePath: string };
+  }
+  interface DepGraph { nodes: DepNode[]; edges: DepEdge[] }
+
+  let graph: DepGraph;
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const raw = await readFile(depGraphPath, 'utf-8');
+    graph = JSON.parse(raw) as DepGraph;
+  } catch {
+    return { error: 'No dependency graph found. Run "spec-gen analyze" first.' };
+  }
+
+  // Resolve the file path to the same form used in the graph (relative or absolute)
+  const node = graph.nodes.find(
+    n => n.file.path === filePath || n.file.absolutePath.endsWith('/' + filePath.replace(/^\//, ''))
+  );
+  if (!node) {
+    return { error: `File not found in dependency graph: ${filePath}`, hint: 'Use a relative path from the project root, e.g. "src/core/analyzer/vector-index.ts"' };
+  }
+
+  const nodeIdToPath = new Map(graph.nodes.map(n => [n.id, n.file.path]));
+
+  const imports = (direction === 'imports' || direction === 'both')
+    ? graph.edges
+        .filter(e => e.source === node.id)
+        .map(e => ({
+          filePath: nodeIdToPath.get(e.target) ?? e.target,
+          importedNames: e.importedNames,
+          isTypeOnly: e.isTypeOnly,
+        }))
+    : undefined;
+
+  const importedBy = (direction === 'importedBy' || direction === 'both')
+    ? graph.edges
+        .filter(e => e.target === node.id)
+        .map(e => ({
+          filePath: nodeIdToPath.get(e.source) ?? e.source,
+          importedNames: e.importedNames,
+          isTypeOnly: e.isTypeOnly,
+        }))
+    : undefined;
+
+  return {
+    filePath: node.file.path,
+    direction,
+    importsCount: imports?.length ?? null,
+    importedByCount: importedBy?.length ?? null,
+    imports,
+    importedBy,
+  };
+}
+
+/**
+ * Find all execution paths between two functions in the call graph.
+ * Useful for debugging: "how does request X reach function Y?",
+ * "which call chain produced this error?".
+ *
+ * Uses DFS with visited-set cycle detection. Returns paths ordered
+ * by hop count (shortest first), capped at maxPaths.
+ */
+export async function handleTraceExecutionPath(
+  directory: string,
+  entryFunction: string,
+  targetFunction: string,
+  maxDepth = TRACE_PATH_DEFAULT_MAX_DEPTH,
+  maxPaths = TRACE_PATH_MAX_PATHS,
+): Promise<unknown> {
+  maxDepth = Math.max(1, Math.min(maxDepth, SUBGRAPH_MAX_DEPTH_LIMIT));
+  maxPaths = Math.max(1, Math.min(maxPaths, 50));
+
+  const absDir = await validateDirectory(directory);
+  const ctx = await readCachedContext(absDir);
+
+  if (!ctx)           return { error: 'No analysis found. Run analyze_codebase first.' };
+  if (!ctx.callGraph) return { error: 'Call graph not available. Re-run analyze_codebase.' };
+
+  const cg = ctx.callGraph as SerializedCallGraph;
+  const { nodeMap, forward } = buildAdjacency(cg);
+
+  const entryLower  = entryFunction.toLowerCase();
+  const targetLower = targetFunction.toLowerCase();
+  const entryNodes  = cg.nodes.filter(n => n.name.toLowerCase().includes(entryLower));
+  const targetNodes = cg.nodes.filter(n => n.name.toLowerCase().includes(targetLower));
+
+  if (entryNodes.length === 0)  return { error: `No function matching "${entryFunction}" found in call graph.` };
+  if (targetNodes.length === 0) return { error: `No function matching "${targetFunction}" found in call graph.` };
+
+  const targetIds = new Set(targetNodes.map(n => n.id));
+  const allPaths: string[][] = [];
+
+  function dfs(currentId: string, path: string[], visited: Set<string>): void {
+    if (allPaths.length >= maxPaths) return;
+    if (targetIds.has(currentId) && path.length > 1) {
+      allPaths.push([...path]);
+      return; // don't traverse past the target
+    }
+    if (path.length > maxDepth) return;
+    for (const neighborId of forward.get(currentId) ?? []) {
+      if (!visited.has(neighborId)) {
+        visited.add(neighborId);
+        path.push(neighborId);
+        dfs(neighborId, path, visited);
+        path.pop();
+        visited.delete(neighborId);
+      }
+    }
+  }
+
+  for (const entry of entryNodes) {
+    if (allPaths.length >= maxPaths) break;
+    dfs(entry.id, [entry.id], new Set([entry.id]));
+  }
+
+  if (allPaths.length === 0) {
+    return {
+      entryFunction,
+      targetFunction,
+      pathsFound: 0,
+      message: `No execution path found from "${entryFunction}" to "${targetFunction}" within depth ${maxDepth}.`,
+      hint: 'Try increasing maxDepth, or check whether both functions are in the same connected component of the call graph.',
+    };
+  }
+
+  allPaths.sort((a, b) => a.length - b.length);
+
+  const paths = allPaths.map(pathIds => {
+    const steps = pathIds.map(id => {
+      const node = nodeMap.get(id);
+      return node
+        ? { name: node.name, file: node.filePath, className: node.className ?? null }
+        : { name: id, file: '', className: null };
+    });
+    return {
+      hops: pathIds.length - 1,
+      chain: steps.map(s => s.name).join(' → '),
+      steps,
+    };
+  });
+
+  return {
+    entryFunction:  entryNodes[0].name,
+    targetFunction: targetNodes[0].name,
+    pathsFound: paths.length,
+    maxDepth,
+    shortestPath: paths[0].chain,
+    paths,
+  };
 }

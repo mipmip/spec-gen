@@ -320,6 +320,8 @@ describe('specGenRun', () => {
       setupMocks({ configExists: true, analysisRecent: true });
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.OPENAI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.OPENAI_COMPAT_API_KEY;
 
       await expect(specGenRun({ rootPath: ROOT })).rejects.toThrow(/API key/i);
     });

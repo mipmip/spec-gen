@@ -4,8 +4,8 @@ import { useState, useRef, useEffect } from 'react';
 // SIMPLE MARKDOWN RENDERER
 // ============================================================================
 
-function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function renderInline(text) {
@@ -155,10 +155,11 @@ function ToolSpinner() {
  * ChatPanel -- agentic chatbot panel for the dependency graph viewer.
  *
  * Props:
- *   onHighlight(ids: string[]) -- called when the agent returns node IDs to highlight
- *   onClose()                  -- called when the panel is closed
+ *   onHighlight(ids: string[])       -- called with dep-graph node IDs to highlight
+ *   onHighlightPaths(paths: string[])-- called with raw file paths (for class graph)
+ *   onClose()                        -- called when the panel is closed
  */
-export function ChatPanel({ onHighlight, onClose }) {
+export function ChatPanel({ onHighlight, onHighlightPaths, onClose }) {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -240,6 +241,7 @@ export function ChatPanel({ onHighlight, onClose }) {
           } else if (evt.type === 'reply') {
             setMessages((prev) => [...prev, { role: 'assistant', content: evt.reply }]);
             onHighlight(evt.highlightIds ?? []);
+            onHighlightPaths?.(evt.filePaths ?? []);
           } else if (evt.type === 'error') {
             throw new Error(evt.error);
           }
@@ -264,6 +266,7 @@ export function ChatPanel({ onHighlight, onClose }) {
     setMessages([{ role: 'assistant', content: 'Conversation cleared. What would you like to know?' }]);
     setError(null);
     onHighlight([]);
+    onHighlightPaths?.([]);
   };
 
   return (

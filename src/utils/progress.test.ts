@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   ProgressIndicator,
   createProgress,
+  renderBar,
   showNextSteps,
   showGenerationSuccess,
   showAnalysisSuccess,
@@ -212,6 +213,64 @@ describe('ProgressIndicator', () => {
       expect(progress.getLogs()).toEqual(['Log 1', 'Log 2']);
     });
   });
+
+  // ── enabled=true paths (uses ora mock) ─────────────────────────────────────
+
+  describe('enabled=true — spinner paths', () => {
+    it('start creates a spinner when enabled', () => {
+      const progress = new ProgressIndicator({ enabled: true });
+      // Should not throw; ora mock returns a fake spinner
+      expect(() => progress.start('Starting')).not.toThrow();
+    });
+
+    it('succeed without message calls spinner.succeed(undefined)', () => {
+      const progress = new ProgressIndicator({ enabled: true });
+      progress.start('Running');
+      expect(() => progress.succeed()).not.toThrow();
+    });
+
+    it('succeed with message calls spinner.succeed with formatted text', () => {
+      const progress = new ProgressIndicator({ enabled: true });
+      progress.start('Running');
+      expect(() => progress.succeed('Done')).not.toThrow();
+    });
+
+    it('fail without message calls spinner.fail(undefined)', () => {
+      const progress = new ProgressIndicator({ enabled: true });
+      progress.start('Running');
+      expect(() => progress.fail()).not.toThrow();
+    });
+
+    it('fail with message when spinner active', () => {
+      const progress = new ProgressIndicator({ enabled: true });
+      progress.start('Running');
+      expect(() => progress.fail('Failed')).not.toThrow();
+    });
+
+    it('warn when spinner active', () => {
+      const progress = new ProgressIndicator({ enabled: true });
+      progress.start('Running');
+      expect(() => progress.warn('Be careful')).not.toThrow();
+    });
+
+    it('info when spinner active', () => {
+      const progress = new ProgressIndicator({ enabled: true });
+      progress.start('Running');
+      expect(() => progress.info('FYI')).not.toThrow();
+    });
+
+    it('stop clears the spinner', () => {
+      const progress = new ProgressIndicator({ enabled: true });
+      progress.start('Running');
+      expect(() => progress.stop()).not.toThrow();
+    });
+
+    it('update when spinner active sets text', () => {
+      const progress = new ProgressIndicator({ enabled: true });
+      progress.start('Running');
+      expect(() => progress.update('Updated')).not.toThrow();
+    });
+  });
 });
 
 describe('createProgress', () => {
@@ -223,6 +282,33 @@ describe('createProgress', () => {
   it('should pass options', () => {
     const progress = createProgress({ enabled: false, verbose: true });
     expect(progress).toBeInstanceOf(ProgressIndicator);
+  });
+});
+
+describe('renderBar', () => {
+  it('returns a formatted bar for normal progress', () => {
+    const bar = renderBar(5, 10);
+    expect(bar).toContain('50%');
+    expect(bar).toContain('(5/10)');
+  });
+
+  it('returns 0% bar when total is 0', () => {
+    const bar = renderBar(0, 0);
+    expect(bar).toContain('0%');
+    expect(bar).toContain('(0/0)');
+  });
+
+  it('returns 100% bar when current equals total (no arrow)', () => {
+    const bar = renderBar(10, 10, 10);
+    expect(bar).toContain('100%');
+    // When filled === width, there's no '>' arrow
+    expect(bar).not.toContain('>');
+  });
+
+  it('uses custom width', () => {
+    const bar = renderBar(1, 2, 20);
+    expect(bar.length).toBeGreaterThan(0);
+    expect(bar).toContain('50%');
   });
 });
 
@@ -361,5 +447,78 @@ describe('showVerificationSuccess', () => {
     const output = consoleSpy.mock.calls.flat().join('\n');
     expect(output).toContain('warnings');
     expect(output).toContain('65.0%');
+  });
+});
+
+// ── TTY-path coverage ─────────────────────────────────────────────────────────
+// When process.stdout.isTTY is true the functions emit emoji-decorated output.
+
+describe('showGenerationSuccess — TTY path', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+  const originalIsTTY = process.stdout.isTTY;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+    Object.defineProperty(process.stdout, 'isTTY', { value: originalIsTTY, configurable: true });
+  });
+
+  it('emits emoji-decorated output when isTTY=true', () => {
+    showGenerationSuccess({ specsCount: 2, outputPath: 'out/', tokensUsed: 1000 });
+    const output = consoleSpy.mock.calls.flat().join('\n');
+    expect(output).toContain('Generation complete');
+  });
+});
+
+describe('showAnalysisSuccess — TTY path', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+  const originalIsTTY = process.stdout.isTTY;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+    Object.defineProperty(process.stdout, 'isTTY', { value: originalIsTTY, configurable: true });
+  });
+
+  it('emits emoji-decorated output when isTTY=true (with domains)', () => {
+    showAnalysisSuccess({ filesAnalyzed: 20, outputPath: 'out/', domains: 3 });
+    const output = consoleSpy.mock.calls.flat().join('\n');
+    expect(output).toContain('Analysis complete');
+    expect(output).toContain('3 domain');
+  });
+});
+
+describe('showVerificationSuccess — TTY path', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+  const originalIsTTY = process.stdout.isTTY;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+    Object.defineProperty(process.stdout, 'isTTY', { value: originalIsTTY, configurable: true });
+  });
+
+  it('emits passed message with emoji when isTTY=true', () => {
+    showVerificationSuccess({ score: 0.9, filesVerified: 3, passed: true });
+    const output = consoleSpy.mock.calls.flat().join('\n');
+    expect(output).toContain('Verification passed');
+  });
+
+  it('emits warning message with emoji when isTTY=true and not passed', () => {
+    showVerificationSuccess({ score: 0.5, filesVerified: 3, passed: false });
+    const output = consoleSpy.mock.calls.flat().join('\n');
+    expect(output).toContain('warnings');
   });
 });

@@ -9,6 +9,13 @@ export const THEMES = {
   space: {
     label: '⬡ space',
     vars: {
+      '--lc-cyan':         '#3ecfcf',
+      '--lc-yellow':       '#f7c76a',
+      '--lc-green':        '#4ade80',
+      '--lc-orange':       '#f97316',
+      '--lc-purple':       '#7c6af7',
+      '--lc-red':          '#f77c6a',
+      '--lc-pink':         '#f76ac8',
       '--bg-base':         '#07091a',
       '--bg-panel':        '#080a1c',
       '--bg-raised':       '#0e1028',
@@ -41,6 +48,13 @@ export const THEMES = {
   terminal: {
     label: '▶ terminal',
     vars: {
+      '--lc-cyan':         '#00d4aa',
+      '--lc-yellow':       '#c8e050',
+      '--lc-green':        '#4ade80',
+      '--lc-orange':       '#f0a040',
+      '--lc-purple':       '#90d0ff',
+      '--lc-red':          '#f07070',
+      '--lc-pink':         '#d080c0',
       '--bg-base':         '#010d01',
       '--bg-panel':        '#020e02',
       '--bg-raised':       '#061206',
@@ -73,6 +87,13 @@ export const THEMES = {
   midnight: {
     label: '◈ midnight',
     vars: {
+      '--lc-cyan':         '#00e5ff',
+      '--lc-yellow':       '#ffe066',
+      '--lc-green':        '#00ff88',
+      '--lc-orange':       '#ff9040',
+      '--lc-purple':       '#b090ff',
+      '--lc-red':          '#ff6060',
+      '--lc-pink':         '#ff60c0',
       '--bg-base':         '#000000',
       '--bg-panel':        '#050505',
       '--bg-raised':       '#0a0a0a',
@@ -105,6 +126,13 @@ export const THEMES = {
   warm: {
     label: '☀ warm',
     vars: {
+      '--lc-cyan':         '#40c0a0',
+      '--lc-yellow':       '#e8c040',
+      '--lc-green':        '#70c050',
+      '--lc-orange':       '#e87020',
+      '--lc-purple':       '#c090e0',
+      '--lc-red':          '#e06040',
+      '--lc-pink':         '#e080a0',
       '--bg-base':         '#1c1711',
       '--bg-panel':        '#221e17',
       '--bg-raised':       '#2a2318',
@@ -133,9 +161,17 @@ export const THEMES = {
       '--ac-cluster-arr':  '#402808',
     },
   },
+
   light: {
     label: '○ light',
     vars: {
+      '--lc-cyan':         '#0a7a8a',
+      '--lc-yellow':       '#8a6000',
+      '--lc-green':        '#1a7a3a',
+      '--lc-orange':       '#b04000',
+      '--lc-purple':       '#4a28c0',
+      '--lc-red':          '#b03020',
+      '--lc-pink':         '#a01870',
       '--bg-base':         '#f4f5f9',
       '--bg-panel':        '#eef0f6',
       '--bg-raised':       '#ffffff',

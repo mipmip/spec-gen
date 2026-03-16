@@ -1,16 +1,44 @@
 /**
  * Tests for graph.ts pure utility functions:
  * buildAdjacency, bfs, computeRiskScore, recommendStrategy, nodeToSummary
+ * Plus error-path tests for the async handlers.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+
+// Mock node:fs/promises so handleGetFileDependencies can be tested without disk I/O.
+// Default: readFile throws (simulates missing dep-graph file).
+vi.mock('node:fs/promises', () => ({
+  readFile: vi.fn(async () => { throw new Error('ENOENT'); }),
+}));
+
+// Static mocks for handler tests
+vi.mock('./utils.js', () => ({
+  validateDirectory: vi.fn(async (dir: string) => dir),
+  readCachedContext: vi.fn(async () => null),
+  loadMappingIndex: vi.fn(async () => null),
+  specsForFile: vi.fn(() => []),
+  functionsForDomain: vi.fn(() => []),
+  isCacheFresh: vi.fn(async () => false),
+}));
+
 import {
   buildAdjacency,
   bfs,
   computeRiskScore,
   recommendStrategy,
   nodeToSummary,
+  handleGetCallGraph,
+  handleGetSubgraph,
+  handleAnalyzeImpact,
+  handleGetLowRiskRefactorCandidates,
+  handleGetLeafFunctions,
+  handleGetCriticalHubs,
+  handleGetGodFunctions,
+  handleGetFileDependencies,
+  handleTraceExecutionPath,
 } from './graph.js';
+import { readCachedContext } from './utils.js';
 import type { FunctionNode, SerializedCallGraph, CallEdge } from '../../analyzer/call-graph.js';
 
 // ============================================================================
@@ -32,13 +60,15 @@ function makeNode(overrides: Partial<FunctionNode> & { id: string }): FunctionNo
 }
 
 function makeEdge(callerId: string, calleeId: string): CallEdge {
-  return { callerId, calleeId, calleeName: calleeId.split('::')[1] ?? calleeId };
+  return { callerId, calleeId, calleeName: calleeId.split('::')[1] ?? calleeId, confidence: 'name_only' };
 }
 
 function makeGraph(nodes: FunctionNode[], edges: CallEdge[]): SerializedCallGraph {
   return {
     nodes,
     edges,
+    classes: [],
+    inheritanceEdges: [],
     hubFunctions: [],
     entryPoints: [],
     layerViolations: [],
@@ -85,7 +115,7 @@ describe('buildAdjacency', () => {
 
   it('should skip edges with empty calleeId', () => {
     const a = makeNode({ id: 'a.ts::foo' });
-    const cg = makeGraph([a], [{ callerId: a.id, calleeId: '', calleeName: 'external' }]);
+    const cg = makeGraph([a], [{ callerId: a.id, calleeId: '', calleeName: 'external', confidence: 'name_only' }]);
 
     const { forward } = buildAdjacency(cg);
     expect(forward.get(a.id)!.size).toBe(0);
@@ -305,5 +335,234 @@ describe('nodeToSummary', () => {
     expect(summary.file).toBe('');
     expect(summary.className).toBeNull();
     expect(summary.depth).toBe(0);
+  });
+});
+
+// ============================================================================
+// Handler error paths (readCachedContext returns null → error object)
+// ============================================================================
+
+describe('handler error paths — no cached context', () => {
+  it('handleGetCallGraph returns error when no context', async () => {
+    vi.mocked(readCachedContext).mockResolvedValue(null);
+    const result = await handleGetCallGraph('/tmp/proj') as { error: string };
+    expect(result.error).toContain('No analysis found');
+  });
+
+  it('handleGetSubgraph returns error when no context', async () => {
+    vi.mocked(readCachedContext).mockResolvedValue(null);
+    const result = await handleGetSubgraph('/tmp/proj', 'doFoo') as { error: string };
+    expect(result.error).toContain('No analysis found');
+  });
+
+  it('handleAnalyzeImpact returns error when no context', async () => {
+    vi.mocked(readCachedContext).mockResolvedValue(null);
+    const result = await handleAnalyzeImpact('/tmp/proj', 'doFoo') as { error: string };
+    expect(result.error).toContain('No analysis found');
+  });
+
+  it('handleGetLowRiskRefactorCandidates returns error when no context', async () => {
+    vi.mocked(readCachedContext).mockResolvedValue(null);
+    const result = await handleGetLowRiskRefactorCandidates('/tmp/proj') as { error: string };
+    expect(result.error).toContain('No analysis found');
+  });
+
+  it('handleGetLeafFunctions returns error when no context', async () => {
+    vi.mocked(readCachedContext).mockResolvedValue(null);
+    const result = await handleGetLeafFunctions('/tmp/proj') as { error: string };
+    expect(result.error).toContain('No analysis found');
+  });
+
+  it('handleGetCriticalHubs returns error when no context', async () => {
+    vi.mocked(readCachedContext).mockResolvedValue(null);
+    const result = await handleGetCriticalHubs('/tmp/proj') as { error: string };
+    expect(result.error).toContain('No analysis found');
+  });
+
+  it('handleGetGodFunctions returns error when no context', async () => {
+    vi.mocked(readCachedContext).mockResolvedValue(null);
+    const result = await handleGetGodFunctions('/tmp/proj') as { error: string };
+    expect(result.error).toContain('No analysis found');
+  });
+
+  it('handleGetFileDependencies returns error when no dependency graph file', async () => {
+    // readCachedContext not involved here; it reads a JSON file directly
+    const result = await handleGetFileDependencies('/tmp/proj', 'src/foo.ts') as { error: string };
+    expect(result.error).toContain('No dependency graph found');
+  });
+
+  it('handleTraceExecutionPath returns error when no context', async () => {
+    vi.mocked(readCachedContext).mockResolvedValue(null);
+    const result = await handleTraceExecutionPath('/tmp/proj', 'foo', 'bar') as { error: string };
+    expect(result.error).toContain('No analysis found');
+  });
+});
+
+// ============================================================================
+// handleTraceExecutionPath — path finding logic
+// ============================================================================
+
+describe('handleTraceExecutionPath', () => {
+  it('finds the shortest direct path between two functions', async () => {
+    const nodes = [
+      makeNode({ id: 'a.ts::processOrder', fanOut: 1 }),
+      makeNode({ id: 'b.ts::applyDiscounts', fanOut: 1 }),
+      makeNode({ id: 'c.ts::chargeCard', fanOut: 0 }),
+    ];
+    const edges = [
+      makeEdge('a.ts::processOrder', 'b.ts::applyDiscounts'),
+      makeEdge('b.ts::applyDiscounts', 'c.ts::chargeCard'),
+    ];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, edges) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'processOrder', 'chargeCard') as {
+      pathsFound: number;
+      shortestPath: string;
+      paths: Array<{ hops: number; chain: string }>;
+    };
+
+    expect(result.pathsFound).toBe(1);
+    expect(result.paths[0].hops).toBe(2);
+    expect(result.paths[0].chain).toBe('processOrder → applyDiscounts → chargeCard');
+  });
+
+  it('returns multiple paths ordered by length (shortest first)', async () => {
+    // A → B → D  (2 hops)
+    // A → C → D  (2 hops)
+    const nodes = [
+      makeNode({ id: 'f.ts::A', fanOut: 2 }),
+      makeNode({ id: 'f.ts::B', fanOut: 1 }),
+      makeNode({ id: 'f.ts::C', fanOut: 1 }),
+      makeNode({ id: 'f.ts::D', fanOut: 0 }),
+    ];
+    const edges = [
+      makeEdge('f.ts::A', 'f.ts::B'),
+      makeEdge('f.ts::A', 'f.ts::C'),
+      makeEdge('f.ts::B', 'f.ts::D'),
+      makeEdge('f.ts::C', 'f.ts::D'),
+    ];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, edges) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'A', 'D') as {
+      pathsFound: number;
+      paths: Array<{ hops: number }>;
+    };
+
+    expect(result.pathsFound).toBe(2);
+    expect(result.paths.every(p => p.hops === 2)).toBe(true);
+  });
+
+  it('returns pathsFound: 0 with a hint when no path exists', async () => {
+    const nodes = [
+      makeNode({ id: 'f.ts::isolated', fanOut: 0 }),
+      makeNode({ id: 'f.ts::other', fanOut: 0 }),
+    ];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, []) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'isolated', 'other') as {
+      pathsFound: number;
+      hint: string;
+    };
+
+    expect(result.pathsFound).toBe(0);
+    expect(result.hint).toBeDefined();
+  });
+
+  it('returns error when entry function is not found', async () => {
+    const nodes = [makeNode({ id: 'f.ts::known', fanOut: 0 })];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, []) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'ghost', 'known') as { error: string };
+    expect(result.error).toContain('"ghost"');
+  });
+
+  it('returns error when target function is not found', async () => {
+    const nodes = [makeNode({ id: 'f.ts::known', fanOut: 0 })];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, []) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'known', 'ghost') as { error: string };
+    expect(result.error).toContain('"ghost"');
+  });
+
+  it('respects maxDepth and does not return paths longer than the limit', async () => {
+    // A → B → C → D (3 hops) — should be excluded when maxDepth=2
+    const nodes = [
+      makeNode({ id: 'f.ts::A', fanOut: 1 }),
+      makeNode({ id: 'f.ts::B', fanOut: 1 }),
+      makeNode({ id: 'f.ts::C', fanOut: 1 }),
+      makeNode({ id: 'f.ts::D', fanOut: 0 }),
+    ];
+    const edges = [
+      makeEdge('f.ts::A', 'f.ts::B'),
+      makeEdge('f.ts::B', 'f.ts::C'),
+      makeEdge('f.ts::C', 'f.ts::D'),
+    ];
+    vi.mocked(readCachedContext).mockResolvedValue({ callGraph: makeGraph(nodes, edges) } as never);
+
+    const result = await handleTraceExecutionPath('/tmp/proj', 'A', 'D', 2) as { pathsFound: number };
+    expect(result.pathsFound).toBe(0);
+  });
+});
+
+// ============================================================================
+// handleGetFileDependencies — direction branches
+// ============================================================================
+
+const DEP_GRAPH_FIXTURE = JSON.stringify({
+  nodes: [
+    { id: 'n1', file: { path: 'src/a.ts', absolutePath: '/proj/src/a.ts' } },
+    { id: 'n2', file: { path: 'src/b.ts', absolutePath: '/proj/src/b.ts' } },
+    { id: 'n3', file: { path: 'src/c.ts', absolutePath: '/proj/src/c.ts' } },
+  ],
+  edges: [
+    { source: 'n1', target: 'n2', importedNames: ['foo'], isTypeOnly: false, weight: 1 },
+    { source: 'n3', target: 'n1', importedNames: ['bar'], isTypeOnly: true,  weight: 1 },
+  ],
+});
+
+describe('handleGetFileDependencies — direction branches', () => {
+  afterEach(async () => {
+    const fs = await import('node:fs/promises');
+    vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
+  });
+
+  async function mockDepGraph() {
+    const fs = await import('node:fs/promises');
+    vi.mocked(fs.readFile).mockResolvedValue(DEP_GRAPH_FIXTURE as never);
+  }
+
+  it('returns imports only when direction is "imports"', async () => {
+    await mockDepGraph();
+    const result = await handleGetFileDependencies('/proj', 'src/a.ts', 'imports') as {
+      imports: unknown[]; importedBy: unknown; importsCount: number;
+    };
+    expect(result.imports).toHaveLength(1);
+    expect(result.importedBy).toBeUndefined();
+    expect(result.importsCount).toBe(1);
+  });
+
+  it('returns importedBy only when direction is "importedBy"', async () => {
+    await mockDepGraph();
+    const result = await handleGetFileDependencies('/proj', 'src/a.ts', 'importedBy') as {
+      imports: unknown; importedBy: unknown[]; importedByCount: number;
+    };
+    expect(result.importedBy).toHaveLength(1);
+    expect(result.imports).toBeUndefined();
+    expect(result.importedByCount).toBe(1);
+  });
+
+  it('returns both imports and importedBy when direction is "both"', async () => {
+    await mockDepGraph();
+    const result = await handleGetFileDependencies('/proj', 'src/a.ts', 'both') as {
+      imports: unknown[]; importedBy: unknown[];
+    };
+    expect(result.imports).toHaveLength(1);
+    expect(result.importedBy).toHaveLength(1);
+  });
+
+  it('returns error when file not found in dependency graph', async () => {
+    await mockDepGraph();
+    const result = await handleGetFileDependencies('/proj', 'src/nonexistent.ts') as { error: string };
+    expect(result.error).toContain('File not found in dependency graph');
   });
 });

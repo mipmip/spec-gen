@@ -35,13 +35,17 @@ import {
   handleGetLeafFunctions,
   handleGetCriticalHubs,
   handleGetGodFunctions,
+  handleGetFileDependencies,
+  handleTraceExecutionPath,
 } from '../../core/services/mcp-handlers/graph.js';
 import {
   handleSearchCode,
   handleSuggestInsertionPoints,
   handleSearchSpecs,
   handleListSpecDomains,
+  handleGetSpec,
 } from '../../core/services/mcp-handlers/semantic.js';
+import { handleOrient } from '../../core/services/mcp-handlers/orient.js';
 import {
   handleAnalyzeCodebase,
   handleGetArchitectureOverview,
@@ -51,6 +55,8 @@ import {
   handleGetMapping,
   handleCheckSpecDrift,
   handleGetFunctionSkeleton,
+  handleGetFunctionBody,
+  handleGetDecisions,
 } from '../../core/services/mcp-handlers/analysis.js';
 
 // Re-export utilities for tests
@@ -65,6 +71,8 @@ export {
   handleGetLeafFunctions,
   handleGetCriticalHubs,
   handleGetGodFunctions,
+  handleGetFileDependencies,
+  handleTraceExecutionPath,
   handleSearchCode,
   handleSuggestInsertionPoints,
   handleSearchSpecs,
@@ -84,11 +92,39 @@ export {
 
 export const TOOL_DEFINITIONS = [
   {
+    name: 'orient',
+    description:
+      'START HERE. Call this before any other tool when beginning a new task on an unfamiliar codebase. ' +
+      'Given a natural-language task description, returns in ONE call: relevant functions, source files, ' +
+      'spec domains that cover them, depth-1 call neighbours, top insertion point candidates, ' +
+      'and matching spec sections. Falls back to keyword search if the embedding server is down. ' +
+      'Requires "spec-gen analyze" to have been run at least once.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Absolute path to the project directory',
+        },
+        task: {
+          type: 'string',
+          description: 'Natural language description of the task, e.g. "add rate limiting to the HTTP API"',
+        },
+        limit: {
+          type: 'number',
+          description: 'Number of relevant functions to return (default: 5)',
+        },
+      },
+      required: ['directory', 'task'],
+    },
+  },
+  {
     name: 'analyze_codebase',
     description:
-      'Run static analysis on a project directory. Extracts repo structure, ' +
-      'dependency graph, call graph (hub functions, entry points), and top ' +
-      'refactoring priorities — all without an LLM. Results are cached for 1 hour.',
+      'USE THIS WHEN: the project has never been analyzed, or the user says the code changed ' +
+      'significantly since the last run, or other tools return "no cache found". ' +
+      'Builds the call graph, dependency graph, and refactor priorities — all without an LLM. ' +
+      'Results are cached for 1 hour; skip this if the cache is recent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -107,10 +143,9 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'get_architecture_overview',
     description:
-      'Return a high-level architecture map of the project: domain clusters with their ' +
-      'key files and roles, cross-cluster dependencies, global entry points, and critical hubs. ' +
-      'Start here when onboarding to an unknown codebase or before planning a large feature. ' +
-      'Run analyze_codebase first.',
+      'USE THIS WHEN: onboarding to an unknown codebase, or before planning a large feature. ' +
+      'Returns domain clusters, cross-cluster dependencies, global entry points, and critical hubs — ' +
+      'faster than reading package.json + directory tree yourself. Run analyze_codebase first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -239,6 +274,41 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'trace_execution_path',
+    description:
+      'USE THIS WHEN debugging: "how does request X reach function Y?", ' +
+      '"which call chain produced this error?", "is there a path from A to B?". ' +
+      'Finds all execution paths between two functions in the call graph (BFS/DFS, ' +
+      'shortest first). Complementary to get_subgraph — use get_subgraph for ' +
+      'neighbourhood exploration, trace_execution_path for point-to-point tracing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Absolute path to the project directory',
+        },
+        entryFunction: {
+          type: 'string',
+          description: 'Starting function name (exact or partial match)',
+        },
+        targetFunction: {
+          type: 'string',
+          description: 'Target function name (exact or partial match)',
+        },
+        maxDepth: {
+          type: 'number',
+          description: 'Maximum path length in hops (default: 6)',
+        },
+        maxPaths: {
+          type: 'number',
+          description: 'Maximum number of paths to return (default: 10, max: 50)',
+        },
+      },
+      required: ['directory', 'entryFunction', 'targetFunction'],
+    },
+  },
+  {
     name: 'get_mapping',
     description:
       'Return the requirement → function mapping produced by spec-gen generate. ' +
@@ -267,11 +337,10 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'check_spec_drift',
     description:
-      'Detect spec drift: identify code changes that are not reflected in the ' +
-      'project\'s OpenSpec specifications. Compares git-changed files against ' +
-      'spec coverage maps. Returns issues categorised as gap, stale, uncovered, ' +
-      'or orphaned-spec. Requires spec-gen generate to have been run at least once. ' +
-      'Runs in static mode (no LLM required).',
+      'USE THIS WHEN: you\'ve modified code and want to know if the specs are still aligned, ' +
+      'or when asked "is the code in sync with the spec?", "what changed since the last spec run?". ' +
+      'Compares git-changed files against spec coverage — impossible to replicate by reading files. ' +
+      'Requires spec-gen generate to have been run at least once. No LLM required.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -309,10 +378,10 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'analyze_impact',
     description:
-      'Deep impact analysis for a specific function or symbol. Returns fan-in, fan-out, ' +
-      'upstream call chain, downstream critical path, a risk score (0–100), blast radius ' +
-      'estimation, and a recommended refactoring strategy. Use this before touching any ' +
-      'function to understand the full consequences. Run analyze_codebase first.',
+      'USE THIS WHEN: you\'re about to modify a function and want to know the full consequences — ' +
+      '"what breaks if I change X?", "what\'s the blast radius of modifying Y?". ' +
+      'Returns fan-in/out, full call chains, risk score (0–100), and refactoring strategy. ' +
+      'Call this before touching any non-trivial function. Run analyze_codebase first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -468,12 +537,11 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'suggest_insertion_points',
     description:
-      'Find the best places in the codebase to implement a new feature described in natural language. ' +
-      'Combines semantic similarity with structural analysis (entry points, orchestrators, hubs) ' +
-      'to return ranked insertion candidates with an actionable strategy for each. ' +
-      'Ideal before implementing a feature: run this first, then use get_subgraph or ' +
-      'get_function_skeleton on the top candidates to understand the local context. ' +
-      'Requires a vector index built with "spec-gen analyze --embed".',
+      'USE THIS WHEN: you need to find where to implement a new feature — ' +
+      '"where should I add rate limiting?", "where\'s the best place to add email validation?". ' +
+      'Combines semantic search + call graph to return ranked candidates with strategy. ' +
+      'Call this before writing any code; then use get_subgraph on the top candidates. ' +
+      'Requires "spec-gen analyze --embed".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -502,12 +570,11 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'search_code',
     description:
-      'Semantic search over indexed functions using a natural language query. ' +
-      'Returns the closest functions by meaning — useful for finding implementations, ' +
-      'understanding how a concept is handled, or navigating unfamiliar codebases. ' +
-      'Requires a vector index built with "spec-gen analyze --embed". ' +
-      'Configure the embedding endpoint via EMBED_BASE_URL + EMBED_MODEL env vars ' +
-      'or the "embedding" section in .spec-gen/config.json.',
+      'USE THIS WHEN: you don\'t know which file or function handles a concept — ' +
+      '"where is rate limiting implemented?", "which function validates tokens?", ' +
+      '"what handles authentication?". Beats grep when the function name is unknown. ' +
+      'Falls back to keyword search automatically if the embedding server is down. ' +
+      'Requires "spec-gen analyze --embed" to have been run at least once.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -551,13 +618,10 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'search_specs',
     description:
-      'Semantic search over OpenSpec specifications to find requirements, design notes, ' +
-      'and architecture decisions by meaning. Returns linked source files for graph highlighting. ' +
-      'Use this when asked "which spec covers X?", "what requirement describes Y?", ' +
-      'or "where should we implement Z?" (spec-first approach). ' +
-      'Requires a spec index built with "spec-gen analyze --embed" or "spec-gen analyze --reindex-specs". ' +
-      'Configure the embedding endpoint via EMBED_BASE_URL + EMBED_MODEL env vars ' +
-      'or the "embedding" section in .spec-gen/config.json.',
+      'USE THIS WHEN: asked "which spec covers X?", "what does the spec say about Y?", ' +
+      '"which requirement describes Z?". Searches specs by meaning and returns linked source files. ' +
+      'Use spec-first: check what the spec says before reading or writing code. ' +
+      'Requires "spec-gen analyze --embed" or "spec-gen analyze --reindex-specs".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -585,13 +649,104 @@ export const TOOL_DEFINITIONS = [
       required: ['directory', 'query'],
     },
   },
+  {
+    name: 'get_spec',
+    description:
+      'Return the full content of a spec domain\'s specification file (spec.md) and the ' +
+      'functions that implement it. Use this to read requirements directly when you know the ' +
+      'domain name. Complements search_specs (which searches by meaning) by giving exact ' +
+      'read access to a known domain.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        domain: {
+          type: 'string',
+          description: 'Domain name as returned by list_spec_domains (e.g. "auth", "analyzer")',
+        },
+      },
+      required: ['directory', 'domain'],
+    },
+  },
+  {
+    name: 'get_function_body',
+    description:
+      'Return the exact source code of a named function in a file. ' +
+      'Use this after search_code or get_function_skeleton to read the full implementation. ' +
+      'Requires a prior "spec-gen analyze" run for precise byte-range extraction; ' +
+      'falls back to a brace-depth scan when the call graph is unavailable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        filePath: {
+          type: 'string',
+          description: 'File path relative to the project directory, e.g. "src/auth/jwt.ts"',
+        },
+        functionName: {
+          type: 'string',
+          description: 'Name of the function to extract, e.g. "verifyToken"',
+        },
+      },
+      required: ['directory', 'filePath', 'functionName'],
+    },
+  },
+  {
+    name: 'get_file_dependencies',
+    description:
+      'Return the file-level import dependencies for a given source file. ' +
+      'Answers "what does this file import?" and "what files import this file?". ' +
+      'Useful for planning refactors, understanding coupling, or scoping the blast radius ' +
+      'of a change. Reads the dependency-graph.json produced by "spec-gen analyze".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        filePath: {
+          type: 'string',
+          description: 'File path relative to the project root, e.g. "src/core/analyzer/vector-index.ts"',
+        },
+        direction: {
+          type: 'string',
+          enum: ['imports', 'importedBy', 'both'],
+          description: '"imports" = what this file depends on, "importedBy" = what depends on this file, "both" = both directions (default)',
+        },
+      },
+      required: ['directory', 'filePath'],
+    },
+  },
+  {
+    name: 'get_decisions',
+    description:
+      'List or search Architecture Decision Records (ADRs) stored in openspec/decisions/. ' +
+      'Use this when you need to understand why an architectural decision was made, ' +
+      'or to check whether a pattern is already documented. ' +
+      'ADRs are generated by "spec-gen generate --adrs".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        query: {
+          type: 'string',
+          description: 'Optional text filter — returns only ADRs whose title or content contains this string',
+        },
+      },
+      required: ['directory'],
+    },
+  },
 ];
 
 // ============================================================================
 // MCP SERVER
 // ============================================================================
 
-async function startMcpServer(): Promise<void> {
+interface McpServerOptions {
+  watch?: string;
+  watchAuto?: boolean;
+  watchDebounce?: string;
+}
+
+async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
   const server = new Server(
     { name: 'spec-gen', version: '1.0.0' },
     { capabilities: { tools: {} } }
@@ -601,13 +756,36 @@ async function startMcpServer(): Promise<void> {
     tools: TOOL_DEFINITIONS,
   }));
 
+  // --watch-auto: start the watcher on the first tool call that carries a directory
+  let autoWatcher: import('../../core/services/mcp-watcher.js').McpWatcher | undefined;
+
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params;
+
+    if (options.watchAuto && !autoWatcher) {
+      const dir = (args as Record<string, unknown>).directory;
+      if (typeof dir === 'string') {
+        const { resolve } = await import('node:path');
+        const { McpWatcher } = await import('../../core/services/mcp-watcher.js');
+        const debounceMs = parseInt(options.watchDebounce ?? '400', 10);
+        autoWatcher = new McpWatcher({
+          rootPath: resolve(dir),
+          debounceMs: isNaN(debounceMs) ? 400 : debounceMs,
+        });
+        await autoWatcher.start();
+        const cleanup = () => autoWatcher!.stop().then(() => process.exit(0));
+        process.on('SIGINT',  cleanup);
+        process.on('SIGTERM', cleanup);
+      }
+    }
 
     try {
       let result: unknown;
 
-      if (name === 'analyze_codebase') {
+      if (name === 'orient') {
+        const { directory, task, limit = 5 } = args as { directory: string; task: string; limit?: number };
+        result = await handleOrient(directory, task, limit);
+      } else if (name === 'analyze_codebase') {
         const { directory, force = false } = args as { directory: string; force?: boolean };
         result = await handleAnalyzeCodebase(directory, force);
       } else if (name === 'get_architecture_overview') {
@@ -626,6 +804,10 @@ async function startMcpServer(): Promise<void> {
         const { directory, functionName, direction = 'downstream', maxDepth = 3, format = 'json' } =
           args as { directory: string; functionName: string; direction?: 'downstream' | 'upstream' | 'both'; maxDepth?: number; format?: 'json' | 'mermaid' };
         result = await handleGetSubgraph(directory, functionName, direction, maxDepth, format);
+      } else if (name === 'trace_execution_path') {
+        const { directory, entryFunction, targetFunction, maxDepth = 6, maxPaths = 10 } =
+          args as { directory: string; entryFunction: string; targetFunction: string; maxDepth?: number; maxPaths?: number };
+        result = await handleTraceExecutionPath(directory, entryFunction, targetFunction, maxDepth, maxPaths);
       } else if (name === 'get_mapping') {
         const { directory, domain, orphansOnly } = args as { directory: string; domain?: string; orphansOnly?: boolean };
         result = await handleGetMapping(directory, domain, orphansOnly);
@@ -674,6 +856,20 @@ async function startMcpServer(): Promise<void> {
       } else if (name === 'list_spec_domains') {
         const { directory } = args as { directory: string };
         result = await handleListSpecDomains(directory);
+      } else if (name === 'get_spec') {
+        const { directory, domain } = args as { directory: string; domain: string };
+        result = await handleGetSpec(directory, domain);
+      } else if (name === 'get_function_body') {
+        const { directory, filePath, functionName } =
+          args as { directory: string; filePath: string; functionName: string };
+        result = await handleGetFunctionBody(directory, filePath, functionName);
+      } else if (name === 'get_file_dependencies') {
+        const { directory, filePath, direction = 'both' } =
+          args as { directory: string; filePath: string; direction?: 'imports' | 'importedBy' | 'both' };
+        result = await handleGetFileDependencies(directory, filePath, direction);
+      } else if (name === 'get_decisions') {
+        const { directory, query } = args as { directory: string; query?: string };
+        result = await handleGetDecisions(directory, query);
       } else {
         return {
           content: [{ type: 'text', text: `Unknown tool: ${name}` }],
@@ -697,6 +893,20 @@ async function startMcpServer(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  if (options.watch) {
+    const { resolve } = await import('node:path');
+    const { McpWatcher } = await import('../../core/services/mcp-watcher.js');
+    const debounceMs = parseInt(options.watchDebounce ?? '400', 10);
+    const watcher = new McpWatcher({
+      rootPath: resolve(options.watch),
+      debounceMs: isNaN(debounceMs) ? 400 : debounceMs,
+    });
+    await watcher.start();
+    const cleanup = () => watcher.stop().then(() => process.exit(0));
+    process.on('SIGINT',  cleanup);
+    process.on('SIGTERM', cleanup);
+  }
 }
 
 // ============================================================================
@@ -705,4 +915,7 @@ async function startMcpServer(): Promise<void> {
 
 export const mcpCommand = new Command('mcp')
   .description('Start spec-gen as an MCP server (stdio transport, for Cline/Claude Code)')
-  .action(startMcpServer);
+  .option('--watch <directory>', 'Watch a project directory and incrementally re-index signatures on file changes')
+  .option('--watch-auto', 'Auto-detect the project directory from the first tool call and start watching (recommended for Cline/Claude Code)', false)
+  .option('--watch-debounce <ms>', 'Debounce delay in ms before re-indexing after a file change (default: 400)', '400')
+  .action((options: McpServerOptions) => startMcpServer(options));

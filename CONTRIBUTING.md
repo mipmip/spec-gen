@@ -26,6 +26,17 @@ npm run dev -- analyze
 npm run dev -- generate
 ```
 
+## Agent Context Setup (one-time, after cloning)
+
+`CLAUDE.md` references `.spec-gen/analysis/CODEBASE.md`, which is git-ignored and must be generated locally:
+
+```bash
+npm run build
+npm run dev -- analyze    # or: spec-gen analyze if installed globally
+```
+
+See [Agent Setup](README.md#agent-setup) in the README for the full explanation of what this file contains and why it matters.
+
 ## Running Tests
 
 ```bash
@@ -43,6 +54,34 @@ npm run test:run -- src/cli/commands/analyze.test.ts
 ```
 
 Tests use [Vitest](https://vitest.dev/). The test suite runs entirely in-process with mocked filesystem/process calls — no real API calls or disk writes.
+
+## Integration & E2E Tests
+
+The e2e suite (`src/core/analyzer/e2e.integration.test.ts`) runs the full `analyze` pipeline against the real spec-gen codebase and verifies that semantic queries return the correct source files. It is the primary non-regression guard for the analyzer.
+
+**Prerequisites:**
+
+```bash
+npm run embed:up              # start the embedding server (Docker)
+spec-gen analyze --embed      # build / refresh the vector index
+```
+
+**Run:**
+
+```bash
+npm run test:e2e
+```
+
+Tests auto-skip when the embedding server or index is missing, so they never break a cold CI environment. They do not replace `npm run test:run` — run both.
+
+**When to run before committing:**
+
+| Change area | Required |
+|---|---|
+| `src/core/analyzer/**` | yes |
+| `src/core/generator/stages/**` | yes |
+| `src/core/services/mcp-handlers/**` | yes |
+| Everything else | recommended |
 
 ## Type Checking
 
@@ -102,6 +141,7 @@ For each `beforeEach`, reset `process.exitCode = undefined` and call `vi.clearAl
 1. Fork the repository and create a branch: `git checkout -b my-feature`
 2. Make your changes — keep PRs focused on a single concern
 3. Ensure `npm run typecheck`, `npm run lint`, and `npm run test:run` all pass
+4. If touching `src/core/analyzer/`, `src/core/generator/stages/`, or `src/core/services/mcp-handlers/`: run `npm run test:e2e` (requires `npm run embed:up` and a fresh index)
 4. Open a pull request with a clear description of the change and why
 
 ## Reporting Bugs

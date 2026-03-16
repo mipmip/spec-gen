@@ -163,6 +163,8 @@ describe('specGenDrift', () => {
     it('throws if llmEnhanced=true but no API key', async () => {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.OPENAI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.OPENAI_COMPAT_API_KEY;
       await expect(specGenDrift({ rootPath: ROOT, llmEnhanced: true })).rejects.toThrow(/API key/i);
     });
 

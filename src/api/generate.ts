@@ -20,6 +20,7 @@ import { ADRGenerator } from '../core/generator/adr-generator.js';
 import { MappingGenerator } from '../core/generator/mapping-generator.js';
 import type { RepoStructure, LLMContext } from '../core/analyzer/artifact-generator.js';
 import type { DependencyGraphResult } from '../core/analyzer/dependency-graph.js';
+import type { RefactorReport } from '../core/analyzer/refactor-analyzer.js';
 import type { GenerateApiOptions, GenerateResult, ProgressCallback } from './types.js';
 import {
   DEFAULT_ANTHROPIC_MODEL,
@@ -35,6 +36,7 @@ import {
   ARTIFACT_REPO_STRUCTURE,
   ARTIFACT_LLM_CONTEXT,
   ARTIFACT_DEPENDENCY_GRAPH,
+  ARTIFACT_REFACTOR_PRIORITIES,
 } from '../constants.js';
 
 function progress(onProgress: ProgressCallback | undefined, step: string, status: 'start' | 'progress' | 'complete' | 'skip', detail?: string): void {
@@ -46,6 +48,7 @@ interface AnalysisData {
   repoStructure: RepoStructure;
   llmContext: LLMContext;
   depGraph?: DependencyGraphResult;
+  refactorReport?: RefactorReport;
 }
 
 async function loadAnalysisData(analysisPath: string): Promise<AnalysisData | null> {
@@ -69,7 +72,12 @@ async function loadAnalysisData(analysisPath: string): Promise<AnalysisData | nu
     ARTIFACT_DEPENDENCY_GRAPH,
   ) ?? undefined;
 
-  return { repoStructure, llmContext, depGraph };
+  const refactorReport = await readJsonFile<RefactorReport>(
+    join(analysisPath, ARTIFACT_REFACTOR_PRIORITIES),
+    ARTIFACT_REFACTOR_PRIORITIES,
+  ) ?? undefined;
+
+  return { repoStructure, llmContext, depGraph, refactorReport };
 }
 
 /**
@@ -106,7 +114,7 @@ export async function specGenGenerate(options: GenerateApiOptions = {}): Promise
   if (!analysisData) {
     throw new Error('No analysis found. Run specGenAnalyze() first.');
   }
-  const { repoStructure, llmContext, depGraph } = analysisData;
+  const { repoStructure, llmContext, depGraph, refactorReport } = analysisData;
   progress(onProgress, 'Loading analysis', 'complete', `${repoStructure.statistics.analyzedFiles} files`);
 
   // Resolve provider
@@ -200,7 +208,7 @@ export async function specGenGenerate(options: GenerateApiOptions = {}): Promise
 
   let pipelineResult;
   try {
-    pipelineResult = await pipeline.run(repoStructure, llmContext, depGraph);
+    pipelineResult = await pipeline.run(repoStructure, llmContext, depGraph, refactorReport);
   } catch (error) {
     await llm.saveLogs().catch(() => {});
     throw new Error(`Pipeline failed: ${(error as Error).message}`);

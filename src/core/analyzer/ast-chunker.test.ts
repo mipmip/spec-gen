@@ -1,0 +1,243 @@
+/**
+ * Tests for ast-chunker — blankLineChunk and astChunkContent
+ */
+
+import { describe, it, expect } from 'vitest';
+import { blankLineChunk, astChunkContent } from './ast-chunker.js';
+
+// ── blankLineChunk ────────────────────────────────────────────────────────────
+
+describe('blankLineChunk', () => {
+  it('returns single chunk when content fits within maxChars', () => {
+    const content = 'hello\nworld\n';
+    const chunks = blankLineChunk(content, 1000);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toContain('hello');
+  });
+
+  it('splits at blank lines when content exceeds maxChars', () => {
+    const block = 'line1\nline2\nline3\n';
+    const content = block + '\n' + block + '\n' + block;
+    const chunks = blankLineChunk(content, block.length + 5);
+    expect(chunks.length).toBeGreaterThan(1);
+  });
+
+  it('preserves content across chunks with overlap', () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `const x${i} = ${i};`);
+    const content = lines.join('\n') + '\n\n' + lines.join('\n');
+    const chunks = blankLineChunk(content, 300, 5);
+    const joined = chunks.join('\n');
+    // All key lines should appear somewhere
+    expect(joined).toContain('const x0 = 0;');
+    expect(joined).toContain('const x49 = 49;');
+  });
+
+  it('returns original content as single chunk when no blank lines', () => {
+    const content = 'a\nb\nc\nd';
+    const chunks = blankLineChunk(content, 5);
+    // No blank lines to split on — everything ends up in the last chunk
+    expect(chunks.length).toBeGreaterThanOrEqual(1);
+    const joined = chunks.join('');
+    expect(joined).toContain('a');
+    expect(joined).toContain('d');
+  });
+});
+
+// ── astChunkContent ───────────────────────────────────────────────────────────
+
+const TS_CONTENT_SMALL = `
+import { foo } from './foo.js';
+
+export function greet(name: string): string {
+  return \`Hello \${name}\`;
+}
+`.trim();
+
+const TS_CONTENT_LARGE = `
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+export function alpha(x: number): number {
+  return x + 1;
+}
+
+export function beta(x: number): number {
+  return x + 2;
+}
+
+export function gamma(x: number): number {
+  return x + 3;
+}
+
+export function delta(x: number): number {
+  return x + 4;
+}
+
+export function epsilon(x: number): number {
+  return x + 5;
+}
+
+export function zeta(x: number): number {
+  return x + 6;
+}
+
+export function eta(x: number): number {
+  return x + 7;
+}
+
+export function theta(x: number): number {
+  return x + 8;
+}
+`.trim();
+
+describe('astChunkContent', () => {
+  it('returns single chunk when content fits within maxChars', async () => {
+    const chunks = await astChunkContent(TS_CONTENT_SMALL, 'test.ts', 10_000);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toContain('greet');
+  });
+
+  it('returns multiple chunks for TypeScript when content exceeds maxChars', async () => {
+    const chunks = await astChunkContent(TS_CONTENT_LARGE, 'src/utils.ts', 200);
+    expect(chunks.length).toBeGreaterThan(1);
+    // Each chunk should contain some code
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('prefixes non-first chunks with import block for TypeScript', async () => {
+    const chunks = await astChunkContent(TS_CONTENT_LARGE, 'src/utils.ts', 200);
+    if (chunks.length > 1) {
+      // Non-first chunks should contain some import from the header
+      expect(chunks[1]).toMatch(/^import /m);
+    }
+  });
+
+  it('falls back to blank-line chunking for unsupported file types', async () => {
+    const content = 'section one\n\n'.repeat(10) + 'section two\n\n'.repeat(10);
+    const chunks = await astChunkContent(content, 'file.unknown', 100);
+    expect(chunks.length).toBeGreaterThan(0);
+    // Should still chunk
+    const joined = chunks.join(' ');
+    expect(joined).toContain('section one');
+    expect(joined).toContain('section two');
+  });
+
+  it('handles Python files with AST chunking', async () => {
+    const pyContent = `
+import os
+import sys
+
+def func_one(x):
+    return x + 1
+
+def func_two(x):
+    return x + 2
+
+def func_three(x):
+    return x + 3
+
+def func_four(x):
+    return x + 4
+
+def func_five(x):
+    return x + 5
+`.trim();
+    const chunks = await astChunkContent(pyContent, 'module.py', 100);
+    expect(chunks.length).toBeGreaterThan(0);
+    const joined = chunks.join('\n');
+    expect(joined).toContain('func_one');
+    expect(joined).toContain('func_five');
+  });
+
+  it('handles JavaScript files (.js extension)', async () => {
+    const jsContent = `
+const a = require('./a');
+
+function doStuff(x) { return x; }
+function doMore(x) { return x + 1; }
+function doEven(x) { return x + 2; }
+function doLots(x) { return x + 3; }
+function doAll(x) { return x + 4; }
+`.trim();
+    const chunks = await astChunkContent(jsContent, 'lib.js', 80);
+    expect(chunks.length).toBeGreaterThan(0);
+  });
+
+  it('returns content as-is when content is empty or whitespace-only', async () => {
+    // An empty file is ≤ maxChars so it just returns [content]
+    const chunks = await astChunkContent('', 'empty.ts', 1000);
+    expect(chunks).toHaveLength(1);
+  });
+
+  it('handles content with no top-level nodes gracefully', async () => {
+    // File that is pure comments — tree-sitter may produce no real content nodes
+    const content = '// just a comment\n// another comment\n// more comments\n'.repeat(50);
+    const chunks = await astChunkContent(content, 'comments.ts', 100);
+    expect(chunks.length).toBeGreaterThan(0);
+  });
+
+  it('handles Go files with AST chunking', async () => {
+    const goContent = `package main
+
+import "fmt"
+
+func one(x int) int { return x + 1 }
+
+func two(x int) int { return x + 2 }
+
+func three(x int) int { return x + 3 }
+
+func four(x int) int { return x + 4 }
+
+func five(x int) int { fmt.Println(x); return x + 5 }
+`.repeat(3);
+    const chunks = await astChunkContent(goContent, 'main.go', 200);
+    expect(chunks.length).toBeGreaterThan(0);
+    const joined = chunks.join('\n');
+    expect(joined).toContain('func one');
+  });
+
+  it('handles Rust files with AST chunking', async () => {
+    const rustContent = `
+fn one(x: i32) -> i32 { x + 1 }
+
+fn two(x: i32) -> i32 { x + 2 }
+
+fn three(x: i32) -> i32 { x + 3 }
+
+fn four(x: i32) -> i32 { x + 4 }
+
+fn five(x: i32) -> i32 { x + 5 }
+`.repeat(3);
+    const chunks = await astChunkContent(rustContent, 'lib.rs', 200);
+    expect(chunks.length).toBeGreaterThan(0);
+    const joined = chunks.join('\n');
+    expect(joined).toContain('fn one');
+  });
+
+  it('handles Ruby files with AST chunking', async () => {
+    const rubyContent = `
+def one(x)
+  x + 1
+end
+
+def two(x)
+  x + 2
+end
+
+def three(x)
+  x + 3
+end
+
+def four(x)
+  x + 4
+end
+`.repeat(3);
+    const chunks = await astChunkContent(rubyContent, 'app.rb', 200);
+    expect(chunks.length).toBeGreaterThan(0);
+    const joined = chunks.join('\n');
+    expect(joined).toContain('def one');
+  });
+});

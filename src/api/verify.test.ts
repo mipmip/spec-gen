@@ -130,6 +130,8 @@ describe('specGenVerify', () => {
     it('throws if no LLM API key', async () => {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.OPENAI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.OPENAI_COMPAT_API_KEY;
       await expect(specGenVerify({ rootPath: ROOT })).rejects.toThrow(/API key/i);
     });
   });
@@ -175,6 +177,8 @@ describe('specGenVerify', () => {
 
     it('uses openai when only OPENAI_API_KEY is set', async () => {
       delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.OPENAI_COMPAT_API_KEY;
       process.env.OPENAI_API_KEY = 'openai-key';
       await specGenVerify({ rootPath: ROOT });
       expect(mockCreateLLMService).toHaveBeenCalledWith(expect.objectContaining({ provider: 'openai' }));

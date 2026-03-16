@@ -211,4 +211,28 @@ describe('config-manager', () => {
       expect(result['spec-gen']?.domains).toEqual(['api']);
     });
   });
+
+  describe('readSpecGenConfig — malformed JSON', () => {
+    it('returns null when config.json contains invalid JSON', async () => {
+      const configDir = join(testDir, '.spec-gen');
+      await mkdir(configDir, { recursive: true });
+      await writeFile(join(configDir, 'config.json'), '{ invalid json !!!', 'utf-8');
+
+      const result = await readSpecGenConfig(testDir);
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('readOpenSpecConfig — malformed YAML', () => {
+    it('returns null when config.yaml contains invalid YAML', async () => {
+      const openspecDir = join(testDir, 'openspec');
+      await mkdir(openspecDir, { recursive: true });
+      // This string is syntactically invalid YAML (tabs where spaces expected, etc.)
+      await writeFile(join(openspecDir, 'config.yaml'), 'key: [unclosed bracket', 'utf-8');
+
+      const result = await readOpenSpecConfig(openspecDir);
+      // Invalid YAML should return null (caught internally)
+      expect(result).toBeNull();
+    });
+  });
 });

@@ -63,6 +63,8 @@ function makeCallGraph(
   return {
     nodes: [],
     edges: [],
+    classes: [],
+    inheritanceEdges: [],
     entryPoints,
     hubFunctions,
     layerViolations,

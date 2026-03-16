@@ -49,7 +49,7 @@ export function detectLanguage(filePath: string): string {
     case 'kt':           return 'Kotlin';
     case 'php':          return 'PHP';
     case 'cs':           return 'C#';
-    case 'cpp': case 'cc': case 'cxx': case 'hpp': return 'C++';
+    case 'cpp': case 'cc': case 'cxx': case 'h': case 'hpp': return 'C++';
     case 'c':            return 'C';
     default:             return 'unknown';
   }
@@ -233,6 +233,34 @@ function extractTypeScript(content: string): ExtractedSignature[] {
       continue;
     }
 
+    // Multi-line export function: `export [async] function name(` with params on following lines
+    const fnOpenMatch = trimmed.match(/^export\s+(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\($/);
+    if (fnOpenMatch) {
+      const name = fnOpenMatch[1];
+      // Scan forward to collect params until closing paren
+      let parenDepth = 1;
+      const paramLines: string[] = [];
+      let retType = '';
+      let j = i + 1;
+      for (; j < lines.length && parenDepth > 0; j++) {
+        const jl = lines[j];
+        for (const ch of jl) {
+          if (ch === '(') parenDepth++;
+          else if (ch === ')') { parenDepth--; if (parenDepth === 0) break; }
+        }
+        if (parenDepth > 0) paramLines.push(jl.trim().replace(/,$/, ''));
+      }
+      // Try to get return type from the line after closing paren (e.g. `): Promise<T> {`)
+      if (j < lines.length) {
+        const retMatch = lines[j].match(/\)\s*:\s*([^{]+)/);
+        if (retMatch) retType = retMatch[1].trim().replace(/\s+/g, ' ');
+      }
+      const params = paramLines.map(p => p.split(':')[0].trim()).filter(Boolean).join(', ');
+      const sig = `export function ${name}(${params})${retType ? ': ' + retType : ''}`;
+      entries.push({ kind: 'function', name, signature: sig, docstring: jsDoc });
+      continue;
+    }
+
     // export const foo = (...) => / export const foo: Type = (...)
     const arrowMatch = trimmed.match(/^export\s+const\s+(\w+)(?:\s*:\s*[\w<>[\], |&]+)?\s*=\s*(?:async\s+)?\(/);
     if (arrowMatch) {
@@ -248,14 +276,42 @@ function extractTypeScript(content: string): ExtractedSignature[] {
       continue;
     }
 
-    // Public class methods (indented, not private/protected/#)
-    const methodMatch = trimmed.match(/^(?:public\s+|static\s+|override\s+|async\s+)*(?:public\s+)?(?:static\s+)?(?:async\s+)?(\w+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?.*\{/);
-    if (methodMatch && line.startsWith('  ') && !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('private') && !trimmed.startsWith('#')) {
+    // Public/private class methods (indented, not '#' private fields) — single-line params
+    // Private methods with JSDoc are included: they're documented because the impl is worth finding.
+    const methodMatch = trimmed.match(/^(?:public\s+|static\s+|override\s+|async\s+|private\s+|protected\s+)*(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:async\s+)?(\w+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?.*\{/);
+    if (methodMatch && line.startsWith('  ') && !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('#')) {
       const name = methodMatch[1];
       if (/^[a-z]/.test(name) && name !== 'if' && name !== 'for' && name !== 'while' && name !== 'switch' && name !== 'return') {
         const params = compactParams(methodMatch[2]);
         const ret = methodMatch[3]?.trim().replace(/\s+/g, ' ') ?? '';
         entries.push({ kind: 'method', name, signature: `  ${name}(${params})${ret ? ': ' + ret : ''}`, docstring: jsDoc });
+        continue;
+      }
+    }
+
+    // Multi-line class method: `[static] [async] methodName(` with no closing paren on same line
+    const methodOpenMatch = trimmed.match(/^(?:public\s+|static\s+|override\s+|async\s+|private\s+|protected\s+)*(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:async\s+)?(\w+)\s*\($/);
+    if (methodOpenMatch && line.startsWith('  ') && !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('#')) {
+      const name = methodOpenMatch[1];
+      if (/^[a-z]/.test(name) && name !== 'if' && name !== 'for' && name !== 'while' && name !== 'switch' && name !== 'return') {
+        let parenDepth = 1;
+        const paramLines: string[] = [];
+        let retType = '';
+        let j = i + 1;
+        for (; j < lines.length && parenDepth > 0; j++) {
+          const jl = lines[j];
+          for (const ch of jl) {
+            if (ch === '(') parenDepth++;
+            else if (ch === ')') { parenDepth--; if (parenDepth === 0) break; }
+          }
+          if (parenDepth > 0) paramLines.push(jl.trim().replace(/,$/, ''));
+        }
+        if (j < lines.length) {
+          const retMatch = lines[j].match(/\)\s*:\s*([^{]+)/);
+          if (retMatch) retType = retMatch[1].trim().replace(/\s+/g, ' ');
+        }
+        const params = paramLines.map(p => p.split(':')[0].trim()).filter(Boolean).join(', ');
+        entries.push({ kind: 'method', name, signature: `  ${name}(${params})${retType ? ': ' + retType : ''}`, docstring: jsDoc });
       }
     }
   }

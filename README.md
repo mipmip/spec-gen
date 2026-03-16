@@ -6,7 +6,7 @@ Reverse-engineer [OpenSpec](https://github.com/Fission-AI/OpenSpec) specificatio
 
 Most software has no specification. The code is the spec, scattered across thousands of files, tribal knowledge, and stale documentation. Tools like `openspec init` create empty scaffolding, but someone still has to write everything. By the time specs are written manually, the code has already changed.
 
-spec-gen automates this. It analyzes your codebase through static analysis, generates structured specifications using an LLM, and continuously detects when code and specs fall out of sync.
+spec-gen automates this. It analyzes your codebase through static analysis, generates structured specifications using an LLM, and continuously detects when code and specs fall out of sync. It also exposes the analysis as an MCP server so AI agents can navigate your codebase with GraphRAG-style retrieval — semantic search combined with call-graph expansion and spec-linked peer discovery.
 
 ## Quick Start
 
@@ -492,7 +492,7 @@ spec-gen analyze [options]
   --include <glob>       # Additional include patterns
   --exclude <glob>       # Additional exclude patterns
   --force                # Force re-analysis (bypass 1-hour cache)
-  --embed                # Build semantic vector index after analysis (requires embedding config)
+  --no-embed             # Skip building the semantic vector index (index is built by default when embedding is configured)
   --reindex-specs        # Re-index OpenSpec specs into the vector index without re-running full analysis
 ```
 
@@ -531,6 +531,95 @@ Checks performed:
 
 Run `spec-gen doctor` whenever setup instructions aren't working — it tells you exactly what to fix and how.
 
+## Agent Setup
+
+### Passive context vs active tools
+
+Agents have two ways to acquire knowledge about your codebase:
+
+- **Passive (zero friction):** files referenced in `CLAUDE.md` / `.clinerules` are read automatically at session start, before the agent even processes your first message. No decision required, no tool call to make.
+- **Active (friction):** MCP tools must be consciously selected from a list, called, and their output integrated into context. Even when the information would help, agents often skip this step and read files directly instead — it's always the safe fallback.
+
+This means architectural context delivered passively is far more reliably absorbed than context behind a tool call. `spec-gen analyze` generates `.spec-gen/analysis/CODEBASE.md` specifically for this purpose: a compact, agent-optimized digest (~100 lines) that agents absorb at session start without any decision cost.
+
+### What CODEBASE.md contains
+
+Generated from the static analysis artifacts, it surfaces what an agent most needs before touching code:
+
+- **Entry points** — functions with no internal callers (where execution starts)
+- **Critical hubs** — highest fan-in functions (most risky to modify)
+- **Spec domains** — which `openspec/specs/` domains exist and what they cover
+- **Most coupled files** — high in-degree in the dependency graph (touch with care)
+- **God functions / oversized orchestrators** — complexity hotspots
+- **Layer violations** — if any
+
+This is structural signal, not prose. It complements `openspec/specs/overview/spec.md`, which provides the functional view (what the system does, what domains exist). Together they give agents both the architectural topology and the business intent.
+
+### Setup
+
+After running `spec-gen analyze`, wire the generated digest into your agent's context:
+
+**Claude Code** — add to `CLAUDE.md`:
+
+```markdown
+@.spec-gen/analysis/CODEBASE.md
+@openspec/specs/overview/spec.md
+
+## spec-gen MCP tools — when to use them
+
+| Situation | Tool |
+|-----------|------|
+| Starting any new task | `orient` — returns functions, files, specs, call paths, and insertion points in one call |
+| Don't know which file/function handles a concept | `search_code` |
+| Need call topology across many files | `get_subgraph` / `analyze_impact` |
+| Planning where to add a feature | `suggest_insertion_points` |
+| Reading a spec before writing code | `get_spec` |
+| Checking if code still matches spec | `check_spec_drift` |
+| Finding spec requirements by meaning | `search_specs` |
+
+For all other cases (reading a file, grepping, listing files) use native tools directly.
+```
+
+**Cline / Roo Code / Kilocode** — create `.clinerules/spec-gen.md`:
+
+```markdown
+# spec-gen
+
+spec-gen provides static analysis artifacts and MCP tools to help you navigate this codebase.
+Always use these before writing or modifying code.
+
+## Before starting any task
+
+- Read `.spec-gen/analysis/CODEBASE.md` — architectural digest: entry points, critical hubs,
+  god functions, most-coupled files, and available spec domains. Generated locally by `spec-gen analyze`.
+- Read `openspec/specs/overview/spec.md` — functional domain map: what the system does,
+  which domains exist, data-flow requirements.
+
+## MCP tools — use these instead of grep/read when exploring
+
+- **Orient first**: call `orient` at the start of every task — it returns relevant functions,
+  files, specs, call paths, and insertion points in one shot.
+- **Finding code**: use `search_code` when you don't know which file or function handles a concept.
+- **Call topology**: use `get_subgraph` or `analyze_impact` when you need to understand
+  how calls flow across multiple files (not just a single file).
+- **Adding a feature**: call `suggest_insertion_points` before deciding where to add code —
+  it accounts for the dependency graph, not just filenames.
+- **Reading specs**: call `get_spec <domain>` before writing code in that domain;
+  use `search_specs` to find requirements by meaning when you don't know the domain name.
+- **Checking drift**: call `check_spec_drift` after modifying a file to verify it still
+  matches its spec — do not skip this step before opening a PR.
+
+Use native tools (Read, Grep, Glob) only for cases not covered above.
+```
+
+`CODEBASE.md` gives the agent passive architectural context. `overview/spec.md` gives the functional domain map. The table tells it when the passive context isn't enough and an active MCP tool call is warranted.
+
+> **Tip:** `spec-gen analyze` prints these snippets after every run as a reminder.
+
+> **Note:** `.spec-gen/analysis/` is git-ignored — each developer generates it locally. Re-run `spec-gen analyze` after significant structural changes to keep the digest current.
+
+---
+
 ## MCP Server
 
 `spec-gen mcp` starts spec-gen as a [Model Context Protocol](https://modelcontextprotocol.io/) server over stdio, exposing static analysis as tools that any MCP-compatible AI agent (Cline, Roo Code, Kilocode, Claude Code, Cursor...) can call directly -- no API key required.
@@ -564,6 +653,31 @@ or for local development:
 ```
 
 **Cline / Roo Code / Kilocode** -- add the same block under `mcpServers` in the MCP settings JSON of your editor.
+
+### Watch mode (keep search_code and orient fresh)
+
+By default the MCP server reads `llm-context.json` from the last `analyze` run. With `--watch-auto`, it also watches source files for changes and incrementally re-indexes signatures so `search_code` and `orient` reflect your latest edits without waiting for the next commit.
+
+Add `--watch-auto` to your MCP config args:
+
+```json
+{
+  "mcpServers": {
+    "spec-gen": {
+      "command": "spec-gen",
+      "args": ["mcp", "--watch-auto"]
+    }
+  }
+}
+```
+
+The watcher starts automatically on the first tool call — no hardcoded path needed. It re-extracts signatures for any changed source file and patches `llm-context.json` within ~500 ms of a save. If an embedding server is reachable, it also re-embeds changed functions into the vector index automatically. The call graph is not rebuilt on every change; it stays current via the [post-commit hook](#cicd-integration) (`spec-gen analyze --force --embed`).
+
+| Option | Default | Description |
+|---|---|---|
+| `--watch-auto` | off | Auto-detect project root from first tool call |
+| `--watch <dir>` | — | Watch a fixed directory (alternative to `--watch-auto`) |
+| `--watch-debounce <ms>` | 400 | Delay before re-indexing after a file change |
 
 ### Cline / Roo Code / Kilocode
 
@@ -640,22 +754,35 @@ All tools run on **pure static analysis** -- no LLM quota consumed.
 
 | Tool | Description | Requires prior analysis |
 |------|-------------|:---:|
+| `orient` | **Single entry point for any new task.** Given a natural-language task description, returns in one call: relevant functions, source files, spec domains, call neighbourhoods, insertion-point candidates, and matching spec sections. Start here. | Yes (+ `--embed`) |
 | `get_subgraph` | Depth-limited subgraph centred on a function. Direction: `downstream` (what it calls), `upstream` (who calls it), or `both`. Output as JSON or Mermaid diagram. | Yes |
 | `get_architecture_overview` | High-level cluster map: roles (entry layer, orchestrator, core utilities, API layer, internal), inter-cluster dependencies, global entry points, and critical hubs. No LLM required. | Yes |
 | `get_function_skeleton` | Noise-stripped view of a source file: logs, inline comments, and non-JSDoc block comments removed. Signatures, control flow, return/throw, and call expressions preserved. Returns reduction %. | No |
-| `suggest_insertion_points` | Semantic search over the vector index to find the best existing functions to extend or hook into when implementing a new feature. Returns ranked candidates with role and strategy. | Yes (+ `--embed`) |
-| `search_code` | Natural-language semantic search over indexed functions. Returns the closest matches by meaning with similarity score. Useful for navigating unfamiliar codebases. | Yes (+ `--embed`) |
+| `get_function_body` | Return the exact source code of a named function in a file. | No |
+| `get_file_dependencies` | Return the file-level import dependencies for a given source file (imports, imported-by, or both). | Yes |
+| `trace_execution_path` | Find all call-graph paths between two functions (DFS, configurable depth/max-paths). Use this when debugging: "how does request X reach function Y?" Returns shortest path, all paths sorted by hops, and a step-by-step chain per path. | Yes |
+| `suggest_insertion_points` | Semantic search over the vector index to find the best existing functions to extend or hook into when implementing a new feature. Returns ranked candidates with role and strategy. Falls back to BM25 keyword search when no embedding server is configured. | Yes (+ `--embed`) |
+| `search_code` | Natural-language semantic search over indexed functions. Returns the closest matches by meaning with similarity score, call-graph neighbourhood enrichment, and spec-linked peer functions. Falls back to BM25 keyword search when no embedding server is configured. | Yes (+ `--embed`) |
 
 **Specs**
 
 | Tool | Description | Requires prior analysis |
 |------|-------------|:---:|
+| `get_spec` | Read the full content of an OpenSpec domain spec by domain name. | Yes (generate) |
 | `get_mapping` | Requirement->function mapping produced by `spec-gen generate`. Shows which functions implement which spec requirements, confidence level, and orphan functions with no spec coverage. | Yes (generate) |
+| `get_decisions` | List or search Architecture Decision Records (ADRs) stored in `openspec/decisions/`. Optional keyword query. | Yes (generate) |
 | `check_spec_drift` | Detect code changes not reflected in OpenSpec specs. Compares git-changed files against spec coverage maps. Issues: gap / stale / uncovered / orphaned-spec / adr-gap. | Yes (generate) |
-| `search_specs` | Semantic search over OpenSpec specifications to find requirements, design notes, and architecture decisions by meaning. Returns linked source files for graph highlighting. Use this when asked "which spec covers X?" or "where should we implement Z?". Requires a spec index built with `spec-gen analyze --embed` or `--reindex-specs`. | Yes (generate) |
+| `search_specs` | Semantic search over OpenSpec specifications to find requirements, design notes, and architecture decisions by meaning. Returns linked source files for graph highlighting. Use this when asked "which spec covers X?" or "where should we implement Z?". Requires a spec index built with `spec-gen analyze` or `--reindex-specs`. | Yes (generate) |
 | `list_spec_domains` | List all OpenSpec domains available in this project. Use this to discover what domains exist before doing a targeted `search_specs` call. | Yes (generate) |
 
 ### Parameters
+
+**`orient`**
+```
+directory  string   Absolute path to the project directory
+task       string   Natural-language description of the task, e.g. "add rate limiting to the API"
+limit      number   Max relevant functions to return (default: 5, max: 20)
+```
 
 **`analyze_codebase`**
 ```
@@ -813,6 +940,20 @@ section    string   Filter by section type: "requirements" | "purpose" | "design
 2. get_mapping({ directory, orphansOnly: true })      # functions with no spec coverage
 ```
 
+**Scenario D -- Starting a new task (fastest orientation)**
+```
+1. orient({ directory, task: "add rate limiting to the API" })
+   # Returns in one call:
+   #   - relevant functions (semantic search or BM25 fallback)
+   #   - source files and spec domains that cover them
+   #   - call-graph neighbourhood for each top function
+   #   - best insertion-point candidates
+   #   - spec-linked peer functions (cross-graph traversal)
+   #   - matching spec sections
+2. get_spec({ directory, domain: "..." })             # read full spec before writing code
+3. check_spec_drift({ directory })                    # verify after implementation
+```
+
 ## Interactive Graph Viewer
 
 `spec-gen view` launches a local React app that visualises your codebase analysis and lets you explore spec requirements side-by-side with the dependency graph.
@@ -936,9 +1077,19 @@ Static analysis output is stored in `.spec-gen/analysis/`:
 
 `spec-gen analyze` also writes **`ARCHITECTURE.md`** to your project root -- a Markdown overview of module clusters, entry points, and critical hubs, refreshed on every run.
 
-## Semantic Search
+## Semantic Search & GraphRAG
 
-`spec-gen analyze --embed` builds a vector index over all functions in the call graph, enabling natural-language search via the `search_code` and `suggest_insertion_points` MCP tools, and the search bar in the viewer.
+`spec-gen analyze` builds a vector index over all functions in the call graph, enabling natural-language search via the `search_code`, `orient`, and `suggest_insertion_points` MCP tools, and the search bar in the viewer.
+
+### GraphRAG retrieval expansion
+
+Semantic search is only the starting point. spec-gen combines three retrieval layers into every search result — this is what makes it genuinely useful for AI agents navigating unfamiliar codebases:
+
+1. **Semantic seed** — dense vector search (or BM25 keyword fallback) finds the top-N functions closest in meaning to the query.
+2. **Call-graph expansion** — BFS up to depth 2 follows callee edges from every seed function, pulling in the files those functions depend on. During `generate`, this ensures the LLM sees the full call neighbourhood, not just the most obvious files.
+3. **Spec-linked peer functions** — each seed function's spec domain is looked up in the requirement→function mapping. Functions from the same spec domain that live in *different files* are surfaced as `specLinkedFunctions`. This crosses the call-graph boundary: implementations that share a spec requirement but are not directly connected by calls are retrieved automatically.
+
+The result: a single `orient` or `search_code` call returns not just "functions that mention this concept" but the interconnected cluster of code and specs that collectively implement it. Agents spend less time chasing cross-file references manually and more time making changes with confidence.
 
 ### Embedding configuration
 

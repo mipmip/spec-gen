@@ -92,7 +92,7 @@ export function parseGraph(raw, palette = CLUSTER_PALETTE) {
     nodes,
     edges,
     clusters,
-    structuralClusters: raw.structuralClusters || [],
+    structuralClusters: raw.structuralClusters || clusters.filter(c => c.internalEdges > 0),
     directoryClusters: raw.directoryClusters || [],
     statistics: raw.statistics || {},
     rankings: raw.rankings || {},

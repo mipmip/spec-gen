@@ -8,13 +8,14 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import logger from '../../utils/logger.js';
-import { SKELETON_EXCERPT_MAX_CHARS } from '../../constants.js';
+import { SKELETON_EXCERPT_MAX_CHARS, SKELETON_STANDALONE_MAX_CHARS, STAGE_CHUNK_MAX_CHARS } from '../../constants.js';
 import type { ProgressIndicator } from '../../utils/progress.js';
 import type { LLMService } from '../services/llm-service.js';
 import type { RepoStructure, LLMContext } from '../analyzer/artifact-generator.js';
 import { buildGraphPromptSection, getFileGodFunctions, extractSubgraph } from '../analyzer/subgraph-extractor.js';
 import { getSkeletonContent, detectLanguage, isSkeletonWorthIncluding } from '../analyzer/code-shaper.js';
 import type { DependencyGraphResult } from '../analyzer/dependency-graph.js';
+import type { RefactorReport } from '../analyzer/refactor-analyzer.js';
 import { isTestFile } from '../analyzer/artifact-generator.js';
 import { runStage1 } from './stages/stage1-survey.js';
 import { runStage2 } from './stages/stage2-entities.js';
@@ -37,6 +38,7 @@ import type {
   PipelineOptions,
   PipelineContext,
   ServiceSubSpec,
+  SemanticSearchFn,
 } from '../../types/pipeline.js';
 
 // Re-export all types for backward compatibility with external consumers
@@ -70,14 +72,16 @@ export type {
  */
 export class SpecGenerationPipeline implements PipelineContext {
   llm: LLMService;
-  options: Required<Omit<PipelineOptions, 'progress'>>;
+  options: Required<Omit<PipelineOptions, 'progress' | 'semanticSearch'>>;
   private progress?: ProgressIndicator;
+  private semanticSearch?: SemanticSearchFn;
   /** Set at the start of run() and used by stage methods for graph-based prompts */
   private currentLLMContext?: LLMContext;
 
   constructor(llm: LLMService, options: PipelineOptions) {
     this.llm = llm;
     this.progress = options.progress;
+    this.semanticSearch = options.semanticSearch;
     this.options = {
       outputDir: options.outputDir,
       skipStages: options.skipStages ?? [],
@@ -95,7 +99,8 @@ export class SpecGenerationPipeline implements PipelineContext {
   async run(
     repoStructure: RepoStructure,
     llmContext: LLMContext,
-    depGraph?: DependencyGraphResult
+    depGraph?: DependencyGraphResult,
+    refactorReport?: RefactorReport
   ): Promise<PipelineResult> {
     this.currentLLMContext = llmContext;
     const startTime = Date.now();
@@ -173,7 +178,7 @@ export class SpecGenerationPipeline implements PipelineContext {
 
       // Stage 2: Entity Extraction
       let entities: ExtractedEntity[] = [];
-      const schemaFiles = await this.resolveFiles(llmContext, survey.schemaFiles ?? [], this.getSchemaFiles(llmContext));
+      const schemaFiles = await this.resolveFiles(llmContext, survey.schemaFiles ?? [], await this.getSchemaFiles(llmContext));
       if (schemaFiles.length > 0) {
         entities = await executeStage(
           'entities',
@@ -190,7 +195,7 @@ export class SpecGenerationPipeline implements PipelineContext {
 
       // Stage 3: Service Analysis
       let services: ExtractedService[] = [];
-      const serviceFiles = await this.resolveFiles(llmContext, survey.serviceFiles ?? [], this.getServiceFiles(llmContext));
+      const serviceFiles = await this.resolveFiles(llmContext, survey.serviceFiles ?? [], await this.getServiceFiles(llmContext));
       if (serviceFiles.length > 0) {
         services = await executeStage(
           'services',
@@ -207,7 +212,7 @@ export class SpecGenerationPipeline implements PipelineContext {
 
        // Stage 4: API Extraction
        let endpoints: ExtractedEndpoint[] = [];
-       const apiFiles = await this.resolveFiles(llmContext, survey.apiFiles ?? [], this.getApiFiles(llmContext));
+       const apiFiles = await this.resolveFiles(llmContext, survey.apiFiles ?? [], await this.getApiFiles(llmContext));
        if (apiFiles.length > 0) {
          endpoints = await executeStage(
            'api',
@@ -226,7 +231,7 @@ export class SpecGenerationPipeline implements PipelineContext {
        const architecture = await executeStage(
          'architecture',
          'Architecture Synthesis',
-         async () => runStage5(this, survey, entities, services, endpoints, depGraph, llmContext.callGraph),
+         async () => runStage5(this, survey, entities, services, endpoints, depGraph, llmContext.callGraph, refactorReport),
          () => this.getDefaultArchitecture(survey),
          data => ({
            ...data,
@@ -336,33 +341,52 @@ export class SpecGenerationPipeline implements PipelineContext {
 
   /**
    * For a large file, try to build a graph-based prompt section.
-   * Returns null when no call graph data is available or the file has no god functions
-   * (caller should fall back to raw source chunking).
+   * Returns null when the file is small enough for raw chunking and has no graph data.
    *
-   * When file content is provided, appends a stripped skeleton when it achieves
-   * a meaningful size reduction (≥ 20%), giving the LLM both topology and
-   * internal control-flow structure.
+   * Priority:
+   *  1. Graph section (god functions) + optional skeleton supplement  — richest representation
+   *  2. Standalone skeleton for large files without god functions     — avoids [PARTIAL SPEC]
+   *  3. null → caller falls back to raw AST chunking
+   *
+   * The skeleton fallback fires when content would be split (> STAGE_CHUNK_MAX_CHARS) and
+   * the skeleton achieves ≥ 20% size reduction AND fits within SKELETON_STANDALONE_MAX_CHARS.
    */
   graphPromptFor(filePath: string, content?: string): string | null {
     const ctx = this.currentLLMContext;
-    if (!ctx?.callGraph) return null;
 
-    const graphSection = buildGraphPromptSection(ctx.callGraph, ctx.signatures, filePath);
-    if (!graphSection) return null;
-    if (!content) return graphSection;
+    // ── Path 1: graph section exists (file has god functions) ──────────────
+    if (ctx?.callGraph) {
+      const graphSection = buildGraphPromptSection(ctx.callGraph, ctx.signatures, filePath);
+      if (graphSection) {
+        if (!content) return graphSection;
 
-    const language = detectLanguage(filePath);
-    const skeleton = getSkeletonContent(content, language);
+        const language = detectLanguage(filePath);
+        const skeleton = getSkeletonContent(content, language);
 
-    if (isSkeletonWorthIncluding(content, skeleton)) {
-      // Cap skeleton to avoid overwhelming the prompt
-      const skeletonExcerpt = skeleton.length > SKELETON_EXCERPT_MAX_CHARS
-        ? skeleton.slice(0, SKELETON_EXCERPT_MAX_CHARS) + '\n... [skeleton truncated]'
-        : skeleton;
-      return `${graphSection}\n\nFunction skeleton (logs/comments stripped):\n${skeletonExcerpt}`;
+        if (isSkeletonWorthIncluding(content, skeleton)) {
+          // Cap skeleton to avoid overwhelming the prompt
+          const skeletonExcerpt = skeleton.length > SKELETON_EXCERPT_MAX_CHARS
+            ? skeleton.slice(0, SKELETON_EXCERPT_MAX_CHARS) + '\n... [skeleton truncated]'
+            : skeleton;
+          return `${graphSection}\n\nFunction skeleton (logs/comments stripped):\n${skeletonExcerpt}`;
+        }
+
+        return graphSection;
+      }
     }
 
-    return graphSection;
+    // ── Path 2: skeleton fallback for large files without god functions ─────
+    // Avoids splitting files into multiple chunks (and the resulting [PARTIAL SPEC] marker)
+    // when the skeleton alone is a complete, noise-free representation.
+    if (content && content.length > STAGE_CHUNK_MAX_CHARS) {
+      const language = detectLanguage(filePath);
+      const skeleton = getSkeletonContent(content, language);
+      if (isSkeletonWorthIncluding(content, skeleton) && skeleton.length <= SKELETON_STANDALONE_MAX_CHARS) {
+        return `Function skeleton (logs/comments stripped):\n${skeleton}`;
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -447,9 +471,84 @@ export class SpecGenerationPipeline implements PipelineContext {
   }
 
   /**
-   * Get schema files from LLM context
+   * Generation retrieval strategy: semantic-first → depth-N graph expansion.
+   *
+   * 1. Semantic search identifies seed files relevant to the query.
+   * 2. BFS graph expansion up to `depth` hops adds callee files so indirect
+   *    implementations are not missed. Score decays by λ^hop (λ=0.6) — used
+   *    only for logging; all resolved files are passed to the LLM stage.
    */
-  private getSchemaFiles(context: LLMContext): Array<{ path: string; content: string }> {
+  private async semanticFiles(
+    query: string,
+    context: LLMContext,
+    limit = 15,
+    depth = 2,
+  ): Promise<Array<{ path: string; content: string }>> {
+    if (!this.semanticSearch) return [];
+    try {
+      const results = await this.semanticSearch(query, limit);
+      const seen = new Set<string>();
+      const files: Array<{ path: string; content: string }> = [];
+
+      const resolveFile = async (fp: string): Promise<void> => {
+        if (seen.has(fp) || isTestFile(fp)) return;
+        seen.add(fp);
+        const deep = context.phase2_deep.files.find(f => f.path === fp);
+        if (deep?.content) {
+          files.push({ path: fp, content: deep.content });
+        } else if (this.options.rootPath) {
+          try {
+            const content = await readFile(resolve(this.options.rootPath, fp), 'utf-8');
+            if (content.trim()) files.push({ path: fp, content });
+          } catch { /* file not readable, skip */ }
+        }
+      };
+
+      // Step 1: resolve semantic seed files
+      for (const r of results) await resolveFile(r.record.filePath);
+      const seedCount = files.length;
+
+      // Step 2: depth-N BFS callee expansion (RIG-21)
+      const cg = context.callGraph;
+      if (cg && seedCount > 0) {
+        const calleeMap = new Map<string, string[]>();
+        for (const e of cg.edges) {
+          if (!e.calleeId) continue;
+          const list = calleeMap.get(e.callerId) ?? [];
+          list.push(e.calleeId);
+          calleeMap.set(e.callerId, list);
+        }
+        const nodeFile = new Map(cg.nodes.map(n => [n.id, n.filePath]));
+        const seedPaths = new Set(seen);
+        let frontier = cg.nodes.filter(n => seedPaths.has(n.filePath)).map(n => n.id);
+
+        for (let hop = 1; hop <= depth && frontier.length > 0; hop++) {
+          const beforeHop = files.length;
+          const nextFrontier: string[] = [];
+          for (const nodeId of frontier) {
+            for (const calleeId of calleeMap.get(nodeId) ?? []) {
+              const calleePath = nodeFile.get(calleeId);
+              if (calleePath && !seen.has(calleePath)) {
+                await resolveFile(calleePath);
+                nextFrontier.push(calleeId);
+              }
+            }
+          }
+          const hopAdded = files.length - beforeHop;
+          if (hopAdded > 0) logger.analysis(`Graph expansion depth ${hop}: +${hopAdded} files`);
+          frontier = nextFrontier;
+        }
+      }
+
+      return files;
+    } catch (err) {
+      logger.warning(`Semantic file selection failed (${query}): ${(err as Error).message}`);
+      return [];
+    }
+  }
+
+  /** Name-based heuristic fallback for schema/entity/type files. */
+  private heuristicSchemaFiles(context: LLMContext): Array<{ path: string; content: string }> {
     return context.phase2_deep.files
       .filter(f => {
         const name = f.path.toLowerCase();
@@ -465,10 +564,8 @@ export class SpecGenerationPipeline implements PipelineContext {
       .filter(f => f.content.length > 0);
   }
 
-  /**
-   * Get service files from LLM context
-   */
-  private getServiceFiles(context: LLMContext): Array<{ path: string; content: string }> {
+  /** Name-based heuristic fallback for service/business-logic files. */
+  private heuristicServiceFiles(context: LLMContext): Array<{ path: string; content: string }> {
     return context.phase2_deep.files
       .filter(f => {
         const name = f.path.toLowerCase();
@@ -485,10 +582,8 @@ export class SpecGenerationPipeline implements PipelineContext {
       .filter(f => f.content.length > 0);
   }
 
-  /**
-   * Get API files from LLM context
-   */
-  private getApiFiles(context: LLMContext): Array<{ path: string; content: string }> {
+  /** Name-based heuristic fallback for API/route files. */
+  private heuristicApiFiles(context: LLMContext): Array<{ path: string; content: string }> {
     return context.phase2_deep.files
       .filter(f => {
         const name = f.path.toLowerCase();
@@ -502,6 +597,63 @@ export class SpecGenerationPipeline implements PipelineContext {
       })
       .map(f => ({ path: f.path, content: f.content ?? '' }))
       .filter(f => f.content.length > 0);
+  }
+
+  /**
+   * Get schema files — semantic-first, name-heuristic fallback.
+   */
+  private async getSchemaFiles(context: LLMContext): Promise<Array<{ path: string; content: string }>> {
+    const semantic = await this.semanticFiles(
+      'data model entity schema type interface database structure',
+      context
+    );
+    if (semantic.length > 0) {
+      logger.analysis(`Schema files: ${semantic.length} via semantic search`);
+      return semantic;
+    }
+    const fallback = this.heuristicSchemaFiles(context);
+    if (this.semanticSearch && fallback.length > 0) {
+      logger.warning('Schema semantic search returned no results, falling back to name heuristics');
+    }
+    return fallback;
+  }
+
+  /**
+   * Get service files — semantic-first, name-heuristic fallback.
+   */
+  private async getServiceFiles(context: LLMContext): Promise<Array<{ path: string; content: string }>> {
+    const semantic = await this.semanticFiles(
+      'service business logic manager handler use case orchestration',
+      context
+    );
+    if (semantic.length > 0) {
+      logger.analysis(`Service files: ${semantic.length} via semantic search`);
+      return semantic;
+    }
+    const fallback = this.heuristicServiceFiles(context);
+    if (this.semanticSearch && fallback.length > 0) {
+      logger.warning('Service semantic search returned no results, falling back to name heuristics');
+    }
+    return fallback;
+  }
+
+  /**
+   * Get API files — semantic-first, name-heuristic fallback.
+   */
+  private async getApiFiles(context: LLMContext): Promise<Array<{ path: string; content: string }>> {
+    const semantic = await this.semanticFiles(
+      'API route endpoint REST controller HTTP request response',
+      context
+    );
+    if (semantic.length > 0) {
+      logger.analysis(`API files: ${semantic.length} via semantic search`);
+      return semantic;
+    }
+    const fallback = this.heuristicApiFiles(context);
+    if (this.semanticSearch && fallback.length > 0) {
+      logger.warning('API semantic search returned no results, falling back to name heuristics');
+    }
+    return fallback;
   }
 
   /**
@@ -618,8 +770,9 @@ export async function runSpecGenerationPipeline(
   repoStructure: RepoStructure,
   llmContext: LLMContext,
   options: PipelineOptions,
-  depGraph?: DependencyGraphResult
+  depGraph?: DependencyGraphResult,
+  refactorReport?: RefactorReport
 ): Promise<PipelineResult> {
   const pipeline = new SpecGenerationPipeline(llm, options);
-  return pipeline.run(repoStructure, llmContext, depGraph);
+  return pipeline.run(repoStructure, llmContext, depGraph, refactorReport);
 }
