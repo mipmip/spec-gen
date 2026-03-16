@@ -85,7 +85,7 @@ export class McpWatcher {
       });
 
       this.fsWatcher.on('ready', () => resolve());
-      this.fsWatcher.on('error', (err) => reject(err));
+      this.fsWatcher.on('error', (err: unknown) => reject(err));
     });
 
     process.stderr.write(`[mcp-watcher] watching ${this.rootPath}\n`);

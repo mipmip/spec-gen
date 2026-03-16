@@ -37,7 +37,7 @@ export type InsertionStrategy =
 export interface InsertionCandidate {
   rank: number;
   score: number;
-  semanticDistance: number;
+  semanticScore: number;
   name: string;
   filePath: string;
   className?: string;
@@ -290,7 +290,7 @@ export async function handleSuggestInsertionPoints(
     return {
       rank: 0,
       score,
-      semanticDistance: r.score,
+      semanticScore: r.score,
       name: r.record.name,
       filePath: r.record.filePath,
       className: r.record.className || undefined,
@@ -338,7 +338,7 @@ export async function handleSuggestInsertionPoints(
         candidates.push({
           rank: 0,
           score,
-          semanticDistance: seedResult.score + 0.15,
+          semanticScore: seedResult.score + 0.15,
           name: callerNode.name,
           filePath: callerNode.filePath,
           className: callerNode.className,
