@@ -959,7 +959,7 @@ const RUBY_FN_QUERY = `
     name: (identifier) @fn.name) @fn.node
 `;
 
-// Explicit calls: fetch(), obj.method()
+// Explicit calls: fn(), obj.method()
 const RUBY_CALL_QUERY = `
   (call
     receiver: (identifier) @call.object
@@ -1024,7 +1024,7 @@ async function extractRubyGraph(
 
   const rawEdges: RawEdge[] = [];
 
-  // Explicit calls: fetch(), obj.method()
+  // Explicit calls: fn(), obj.method()
   for (const match of callQuery.matches(tree.rootNode)) {
     const nameCapture = match.captures.find(c => c.name === 'call.name');
     const nodeCapture = match.captures.find(c => c.name === 'call.node');
@@ -1040,7 +1040,7 @@ async function extractRubyGraph(
     rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1, calleeObject: objectCapture?.node.text });
   }
 
-  // Bareword calls: fetch (no parens) — identifier at statement level
+  // Bareword calls: identifier at statement level, no parens
   for (const match of barewordQuery.matches(tree.rootNode)) {
     const nameCapture = match.captures.find(c => c.name === 'call.name');
     if (!nameCapture) continue;
