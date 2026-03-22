@@ -308,13 +308,14 @@ spec-gen drift --no-color                # Plain output for CI logs
 
 ## LLM Providers
 
-spec-gen supports four providers. The default is Anthropic Claude.
+spec-gen supports five providers. The default is Anthropic Claude.
 
 | Provider | `provider` value | API key env var | Default model |
 |----------|-----------------|-----------------|---------------|
 | Anthropic Claude | `anthropic` *(default)* | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o` |
 | OpenAI-compatible *(Mistral, Groq, Ollama...)* | `openai-compat` | `OPENAI_COMPAT_API_KEY` | `mistral-large-latest` |
+| GitHub Copilot *(via copilot-api proxy)* | `copilot` | *(none)* | `gpt-4o` |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
 
 ### Selecting a provider
@@ -377,6 +378,38 @@ Or in `config.json`:
 
 Works with: Ollama, LM Studio, Mistral AI, Groq, Together AI, LiteLLM, vLLM,
 text-generation-inference, LocalAI, Azure OpenAI, and any `/v1/chat/completions` server.
+
+### GitHub Copilot (via copilot-api proxy)
+
+Use `provider: "copilot"` to generate specs using your GitHub Copilot subscription via the
+[copilot-api](https://github.com/ericc-ch/copilot-api) proxy, which exposes an OpenAI-compatible
+endpoint from your Copilot credentials.
+
+**Setup:**
+1. Install and start the copilot-api proxy:
+   ```bash
+   npx copilot-api
+   ```
+   By default it listens on `http://localhost:4141`.
+
+2. Configure spec-gen:
+   ```json
+   {
+     "generation": {
+       "provider": "copilot",
+       "model": "gpt-4o",
+       "domains": "auto"
+     }
+   }
+   ```
+
+**Environment variables** (optional):
+```bash
+export COPILOT_API_BASE_URL=http://localhost:4141/v1   # default
+export COPILOT_API_KEY=copilot                         # default, only needed if proxy requires auth
+```
+
+No API key is required — the copilot-api proxy handles authentication via your GitHub Copilot session.
 
 ### Custom base URL for Anthropic or OpenAI
 

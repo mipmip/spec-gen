@@ -17,6 +17,7 @@ import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
   DEFAULT_OPENAI_COMPAT_MODEL,
+  DEFAULT_COPILOT_MODEL,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_SURVEY_ESTIMATED_TOKENS,
   COST_CONFIRMATION_THRESHOLD,
@@ -392,16 +393,16 @@ Each spec.md follows OpenSpec conventions:
         : openaiCompatKey ? 'openai-compat'
         : 'openai';
       const rootConfig = specGenConfig as unknown as Record<string, string>;
-      const effectiveProvider = (specGenConfig.generation.provider ?? rootConfig['provider'] ?? envDetectedProvider) as 'anthropic' | 'openai' | 'openai-compat' | 'gemini' | 'claude-code' | 'mistral-vibe';
+      const effectiveProvider = (specGenConfig.generation.provider ?? rootConfig['provider'] ?? envDetectedProvider) as 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'claude-code' | 'mistral-vibe';
 
-      if (effectiveProvider !== 'claude-code' && effectiveProvider !== 'mistral-vibe' && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
+      if (effectiveProvider !== 'claude-code' && effectiveProvider !== 'mistral-vibe' && effectiveProvider !== 'copilot' && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
         logger.error('No LLM API key found.');
         logger.discovery('Set one of the following environment variables:');
         logger.discovery('  ANTHROPIC_API_KEY    → https://console.anthropic.com/');
         logger.discovery('  OPENAI_API_KEY       → https://platform.openai.com/');
         logger.discovery('  GEMINI_API_KEY       → https://aistudio.google.com/');
         logger.discovery('  OPENAI_COMPAT_API_KEY + OPENAI_COMPAT_BASE_URL  → Mistral, Groq, Ollama...');
-        logger.discovery('  Or set provider to "claude-code" or "mistral-vibe" to use local CLI tools (no API key needed).');
+        logger.discovery('  Or set provider to "claude-code", "mistral-vibe", or "copilot" (no API key needed).');
         process.exitCode = 1;
         return;
       }
@@ -411,6 +412,7 @@ Each spec.md follows OpenSpec conventions:
         anthropic: DEFAULT_ANTHROPIC_MODEL,
         gemini: DEFAULT_GEMINI_MODEL,
         'openai-compat': DEFAULT_OPENAI_COMPAT_MODEL,
+        copilot: DEFAULT_COPILOT_MODEL,
         openai: DEFAULT_OPENAI_MODEL,
         'claude-code': 'claude-code',
         'mistral-vibe': 'mistral-vibe',

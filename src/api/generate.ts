@@ -26,6 +26,7 @@ import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
   DEFAULT_OPENAI_COMPAT_MODEL,
+  DEFAULT_COPILOT_MODEL,
   DEFAULT_GEMINI_MODEL,
   SPEC_GEN_DIR,
   SPEC_GEN_ANALYSIS_SUBDIR,
@@ -123,9 +124,12 @@ export async function specGenGenerate(options: GenerateApiOptions = {}): Promise
   const openaiCompatKey = process.env.OPENAI_COMPAT_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
 
-  if (!anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
+  const configuredProvider = options.provider ?? specGenConfig.generation.provider;
+  const noKeyProviders = ['claude-code', 'mistral-vibe', 'copilot'];
+
+  if (!noKeyProviders.includes(configuredProvider ?? '') && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
     throw new Error(
-      'No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or OPENAI_COMPAT_API_KEY.'
+      'No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OPENAI_COMPAT_API_KEY, or use provider "copilot".'
     );
   }
 
@@ -134,12 +138,13 @@ export async function specGenGenerate(options: GenerateApiOptions = {}): Promise
     : openaiCompatKey ? 'openai-compat'
     : 'openai';
 
-  const effectiveProvider = options.provider ?? specGenConfig.generation.provider ?? envDetectedProvider;
+  const effectiveProvider = configuredProvider ?? envDetectedProvider;
 
   const defaultModels: Record<string, string> = {
     anthropic: DEFAULT_ANTHROPIC_MODEL,
     gemini: DEFAULT_GEMINI_MODEL,
     'openai-compat': DEFAULT_OPENAI_COMPAT_MODEL,
+    copilot: DEFAULT_COPILOT_MODEL,
     openai: DEFAULT_OPENAI_MODEL,
   };
   const effectiveModel = options.model || specGenConfig.generation.model || defaultModels[effectiveProvider];
