@@ -938,7 +938,7 @@ export class OpenSpecFormatGenerator {
     if (!name) return 'Unnamed';
     return name
       .split(/[\s_-]+/)
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
       .join('');
   }
 

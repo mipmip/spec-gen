@@ -356,7 +356,7 @@ describe('OpenSpecFormatGenerator', () => {
       const specs = generator.generateSpecs(result);
       const userSpec = specs.find(s => s.domain === 'user' && s.type === 'domain')!;
 
-      expect(userSpec.content).toContain('### Requirement: Getuser');
+      expect(userSpec.content).toContain('### Requirement: GetUser');
       expect(userSpec.content).toContain('SHALL retrieves a user by id');
     });
 
@@ -478,7 +478,7 @@ describe('OpenSpecFormatGenerator', () => {
       const apiSpec = specs.find(s => s.type === 'api')!;
 
       expect(apiSpec.content).toContain('## Requirements');
-      expect(apiSpec.content).toContain('### Requirement: Getuser');
+      expect(apiSpec.content).toContain('### Requirement: GETUser');
       expect(apiSpec.content).toContain('`GET /users/:id`');
     });
 
@@ -513,7 +513,7 @@ describe('OpenSpecFormatGenerator', () => {
       const apiSpec = specs.find(s => s.type === 'api')!;
 
       // POST /users has no scenarios, should get default
-      expect(apiSpec.content).toContain('#### Scenario: PostuserSuccess');
+      expect(apiSpec.content).toContain('#### Scenario: POSTUserSuccess');
       expect(apiSpec.content).toContain('**GIVEN** an authenticated user');
     });
   });

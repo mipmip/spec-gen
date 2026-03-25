@@ -76,12 +76,43 @@ export class RagManifestGenerator {
       }
     }
 
+    // Build a flat list of all cluster files for filename-based fallback
+    const allClusterFiles: Array<{ file: string; domain: string }> = [];
+    if (depGraph) {
+      for (const [domain, cl] of clusterByDomain) {
+        for (const f of cl.files) allClusterFiles.push({ file: f, domain });
+      }
+    }
+
     // For each domain spec, compute dependsOn / calledBy from dep graph edges
     const entries: RagDomainEntry[] = domainSpecs.map(spec => {
       const domainKey = spec.domain.toLowerCase();
-      const cluster = clusterByDomain.get(domainKey);
-      const sourceFiles = cluster?.files ?? [];
-      const clusterFileSet = new Set(sourceFiles);
+      let cluster = clusterByDomain.get(domainKey);
+
+      // Fallback: if no exact cluster match, collect files whose basename
+      // contains the domain name (e.g. "openspec-*.ts" for domain "openspec")
+      let sourceFiles: string[];
+      if (cluster) {
+        sourceFiles = cluster.files;
+      } else if (depGraph) {
+        sourceFiles = allClusterFiles
+          .filter(({ file }) => {
+            const basename = file.split('/').pop() ?? '';
+            return basename.toLowerCase().includes(domainKey);
+          })
+          .map(({ file }) => file);
+        // Synthesise a virtual cluster entry so edge resolution works below
+        if (sourceFiles.length > 0) {
+          const virtualId = `virtual:${domainKey}`;
+          cluster = { files: sourceFiles, id: virtualId };
+          clusterByDomain.set(domainKey, cluster);
+          clusterDomainById.set(virtualId, domainKey);
+          for (const f of sourceFiles) clusterIdByFile.set(f, virtualId);
+        }
+      } else {
+        sourceFiles = [];
+      }
+      const clusterFileSet = new Set(cluster?.files ?? sourceFiles);
 
       const dependsOnDomains = new Set<string>();
       const calledByDomains = new Set<string>();

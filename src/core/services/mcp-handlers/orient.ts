@@ -15,7 +15,7 @@
  */
 
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { validateDirectory, loadMappingIndex, specsForFile, functionsForDomain, readCachedContext } from './utils.js';
 import { readSpecGenConfig } from '../config-manager.js';
 import type { RagManifest } from '../../generator/rag-manifest-generator.js';
@@ -26,6 +26,60 @@ import {
   compositeScore,
   buildReason,
 } from './semantic.js';
+
+// ============================================================================
+// MANIFEST CACHE
+// ============================================================================
+
+interface CondensedEntry {
+  content: string;
+  mtime: number;
+}
+
+interface ManifestCache {
+  manifest: RagManifest;
+  /** mtimeMs of rag-manifest.json at load time */
+  fileMtime: number;
+  /** condensed spec content keyed by specPath, each with its own mtime */
+  condensed: Map<string, CondensedEntry>;
+}
+
+/** One cache entry per project directory (MCP server is long-lived). */
+const _manifestCache = new Map<string, ManifestCache>();
+
+/** Load (or return cached) RagManifest. Returns undefined on any error. */
+async function loadManifestCached(manifestPath: string, cacheKey: string): Promise<ManifestCache | undefined> {
+  try {
+    const mtime = (await stat(manifestPath)).mtimeMs;
+    const cached = _manifestCache.get(cacheKey);
+    if (cached && cached.fileMtime === mtime) return cached;
+    const raw = await readFile(manifestPath, 'utf-8');
+    const entry: ManifestCache = {
+      manifest: JSON.parse(raw) as RagManifest,
+      fileMtime: mtime,
+      condensed: cached?.condensed ?? new Map(),
+    };
+    _manifestCache.set(cacheKey, entry);
+    return entry;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Load (or return cached) condensed spec content for a single spec file. */
+async function loadCondensedCached(cache: ManifestCache, absSpecPath: string, specPath: string): Promise<string | undefined> {
+  try {
+    const mtime = (await stat(absSpecPath)).mtimeMs;
+    const cached = cache.condensed.get(specPath);
+    if (cached && cached.mtime === mtime) return cached.content;
+    const raw = await readFile(absSpecPath, 'utf-8');
+    const content = condenseSpec(raw);
+    cache.condensed.set(specPath, { content, mtime });
+    return content;
+  } catch {
+    return undefined;
+  }
+}
 
 // ============================================================================
 // TYPES
@@ -261,37 +315,36 @@ export async function handleOrient(
     }
   }
 
-  // ── Inline spec content from RAG manifest ─────────────────────────────────
+  // ── Inline spec purpose from RAG manifest ─────────────────────────────────
   let inlineSpecs: InlineSpec[] | undefined;
   if (specDomains.length > 0) {
     try {
       const cfg = await readSpecGenConfig(absDir);
       const openspecRelPath = cfg?.openspecPath ?? OPENSPEC_DIR;
       const manifestPath = join(absDir, openspecRelPath, ARTIFACT_RAG_MANIFEST);
-      const manifestRaw = await readFile(manifestPath, 'utf-8');
-      const manifest = JSON.parse(manifestRaw) as RagManifest;
-
-      const specs = await Promise.all(
-        specDomains.slice(0, 3).map(async sd => {
-          const entry = manifest.domains.find(d => d.domain.toLowerCase() === sd.domain.toLowerCase());
-          if (!entry) return null;
-          try {
-            const specContent = await readFile(join(absDir, entry.specPath), 'utf-8');
+      const manifestCache = await loadManifestCached(manifestPath, absDir);
+      if (manifestCache) {
+        const { manifest } = manifestCache;
+        const specs = await Promise.all(
+          specDomains.slice(0, 3).map(async sd => {
+            const entry = manifest.domains.find(d => d.domain.toLowerCase() === sd.domain.toLowerCase());
+            if (!entry) return null;
+            const absSpecPath = join(absDir, entry.specPath);
+            const content = await loadCondensedCached(manifestCache, absSpecPath, entry.specPath);
+            if (!content) return null;
             return {
               domain: sd.domain,
               specPath: entry.specPath,
               sourceFiles: entry.sourceFiles,
               dependsOn: entry.dependsOn,
               calledBy: entry.calledBy,
-              content: condenseSpec(specContent),
+              content,
             } satisfies InlineSpec;
-          } catch {
-            return null;
-          }
-        }),
-      );
-      const filtered = specs.filter((s): s is InlineSpec => s !== null);
-      if (filtered.length > 0) inlineSpecs = filtered;
+          }),
+        );
+        const filtered = specs.filter((s): s is InlineSpec => s !== null);
+        if (filtered.length > 0) inlineSpecs = filtered;
+      }
     } catch {
       // non-fatal — manifest may not exist yet (generate not yet run)
     }
@@ -306,7 +359,7 @@ export async function handleOrient(
   }
   if (specDomains.length > 0) {
     const hint = inlineSpecs
-      ? `Spec context for "${specDomains[0].domain}" is included in inlineSpecs — call get_spec("${specDomains[0].domain}") only if you need the full body`
+      ? `Domain purposes included in inlineSpecs — call get_spec("${specDomains[0].domain}") for requirements and implementation details`
       : `Call get_spec("${specDomains[0].domain}") to read the full spec before writing code`;
     nextSteps.push(hint);
   }
@@ -335,58 +388,19 @@ export async function handleOrient(
 // ============================================================================
 
 /**
- * Condense a spec's markdown to ~200-400 tokens:
- * - ## Purpose — first paragraph only
- * - ## Dependencies — full section (if present, added by Piste 4)
- * - ### Requirement: {name} — header + > Implementation: line only, no body
+ * Condense a spec to its ## Purpose paragraph only (~50-150 chars).
+ * dependsOn/calledBy are already in the InlineSpec manifest fields.
+ * Full requirements are available via get_spec.
  */
 function condenseSpec(content: string): string {
   const lines = content.split('\n');
-  const out: string[] = [];
-  let i = 0;
-
-  // Extract ## Purpose — first non-empty paragraph
   const purposeStart = lines.findIndex(l => /^## Purpose\s*$/.test(l));
-  if (purposeStart !== -1) {
-    out.push(lines[purposeStart]);
-    i = purposeStart + 1;
-    // Skip blank lines, then collect until next blank
-    while (i < lines.length && lines[i].trim() === '') i++;
-    while (i < lines.length && lines[i].trim() !== '' && !lines[i].startsWith('#')) {
-      out.push(lines[i++]);
-    }
-    out.push('');
+  if (purposeStart === -1) return '';
+  let i = purposeStart + 1;
+  while (i < lines.length && lines[i].trim() === '') i++;
+  const out: string[] = [];
+  while (i < lines.length && lines[i].trim() !== '' && !lines[i].startsWith('#')) {
+    out.push(lines[i++]);
   }
-
-  // Extract ## Dependencies section (full)
-  const depsStart = lines.findIndex(l => /^## Dependencies\s*$/.test(l));
-  if (depsStart !== -1) {
-    let j = depsStart;
-    while (j < lines.length && (j === depsStart || !lines[j].match(/^## /))) {
-      out.push(lines[j++]);
-    }
-    out.push('');
-  }
-
-  // Extract ### Requirement headers + > Implementation lines
-  const reqSection: string[] = [];
-  for (let k = 0; k < lines.length; k++) {
-    if (/^### Requirement:/.test(lines[k])) {
-      reqSection.push(lines[k]);
-      // Look for > Implementation: within next 5 lines
-      for (let m = k + 1; m < Math.min(k + 6, lines.length); m++) {
-        if (/^> Implementation:/.test(lines[m])) {
-          reqSection.push(lines[m]);
-          break;
-        }
-        if (lines[m].startsWith('###') || lines[m].startsWith('##')) break;
-      }
-    }
-  }
-  if (reqSection.length > 0) {
-    out.push('## Requirements (summary)');
-    out.push(...reqSection);
-  }
-
-  return out.join('\n').trim();
+  return out.join('\n').trim().replace(/^\[PARTIAL SPEC[^\]]*\]\s*/i, '');
 }
