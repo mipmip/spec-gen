@@ -92,6 +92,7 @@ Scans your codebase using pure static analysis:
 - Parses imports and exports to build a dependency graph (TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C++, Swift)
 - Detects HTTP cross-language edges: matches `fetch`/`axios`/`ky`/`got` calls in JS/TS files to FastAPI/Flask/Django route definitions in Python files, creating cross-language dependency edges with `exact`, `path`, or `fuzzy` confidence
 - Resolves Python absolute imports (`from services.retriever import X`) to local files
+- Synthesizes cross-file dependency edges from call-graph data for languages without file-level imports (Swift, C++), so the dependency graph and viewer are meaningful even in single-module projects
 - Clusters related files into structural business domains automatically
 - Produces structured context that makes LLM generation more accurate
 
@@ -308,14 +309,18 @@ spec-gen drift --no-color                # Plain output for CI logs
 
 ## LLM Providers
 
-spec-gen supports four providers. The default is Anthropic Claude.
+spec-gen supports eight providers. The default is Anthropic Claude.
 
 | Provider | `provider` value | API key env var | Default model |
 |----------|-----------------|-----------------|---------------|
 | Anthropic Claude | `anthropic` *(default)* | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o` |
 | OpenAI-compatible *(Mistral, Groq, Ollama...)* | `openai-compat` | `OPENAI_COMPAT_API_KEY` | `mistral-large-latest` |
+| GitHub Copilot *(via copilot-api proxy)* | `copilot` | *(none)* | `gpt-4o` |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
+| Gemini CLI | `gemini-cli` | *(none)* | *(CLI default)* |
+| Claude Code | `claude-code` | *(none)* | *(CLI default)* |
+| Mistral Vibe | `mistral-vibe` | *(none)* | *(CLI default)* |
 
 ### Selecting a provider
 
@@ -377,6 +382,57 @@ Or in `config.json`:
 
 Works with: Ollama, LM Studio, Mistral AI, Groq, Together AI, LiteLLM, vLLM,
 text-generation-inference, LocalAI, Azure OpenAI, and any `/v1/chat/completions` server.
+
+### GitHub Copilot (via copilot-api proxy)
+
+Use `provider: "copilot"` to generate specs using your GitHub Copilot subscription via the
+[copilot-api](https://github.com/ericc-ch/copilot-api) proxy, which exposes an OpenAI-compatible
+endpoint from your Copilot credentials.
+
+**Setup:**
+1. Install and start the copilot-api proxy:
+   ```bash
+   npx copilot-api
+   ```
+   By default it listens on `http://localhost:4141`.
+
+2. Configure spec-gen:
+   ```json
+   {
+     "generation": {
+       "provider": "copilot",
+       "model": "gpt-4o",
+       "domains": "auto"
+     }
+   }
+   ```
+
+**Environment variables** (optional):
+```bash
+export COPILOT_API_BASE_URL=http://localhost:4141/v1   # default
+export COPILOT_API_KEY=copilot                         # default, only needed if proxy requires auth
+```
+
+No API key is required — the copilot-api proxy handles authentication via your GitHub Copilot session.
+
+### CLI-based providers (no API key)
+
+Three providers route LLM calls through local CLI tools instead of HTTP APIs. No API key or configuration is needed — just have the CLI installed and on your PATH.
+
+| Provider | CLI binary | Install |
+|----------|-----------|---------|
+| `claude-code` | `claude` | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (requires Claude Max/Pro subscription) |
+| `gemini-cli` | `gemini` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) (free tier with Google account) |
+| `mistral-vibe` | `vibe` | [Mistral Vibe](https://github.com/mistralai/mistral-vibe) (standalone binary) |
+
+```json
+{
+  "generation": {
+    "provider": "claude-code",
+    "domains": "auto"
+  }
+}
+```
 
 ### Custom base URL for Anthropic or OpenAI
 
@@ -1016,6 +1072,7 @@ spec-gen view --spec <path>        # custom spec dir (default: ./openspec/specs/
 | **Flat** | Force-directed dependency graph (all nodes). Import edges are solid; call edges (Swift/C++ synthesised, or HTTP cross-language) are cyan dashed |
 | **Classes** | Class/struct inheritance and call graph. Nodes coloured by language or connected component; isolated nodes hidden. Component-aware force layout keeps related classes together |
 | **Architecture** | High-level cluster map: role-coloured boxes, inter-cluster dependency arrows |
+| **Classes** | Component-aware force layout of class/struct relationships with coloured groupings |
 
 ### Diagram Chat
 
@@ -1188,6 +1245,8 @@ The index is stored in `.spec-gen/analysis/vector-index/` and is automatically u
 | `OPENAI_COMPAT_API_KEY` | `openai-compat` | API key for OpenAI-compatible server |
 | `OPENAI_COMPAT_BASE_URL` | `openai-compat` | Base URL, e.g. `https://api.mistral.ai/v1` |
 | `GEMINI_API_KEY` | `gemini` | Google Gemini API key |
+| `COPILOT_API_BASE_URL` | `copilot` | Base URL of the copilot-api proxy (default: `http://localhost:4141/v1`) |
+| `COPILOT_API_KEY` | `copilot` | API key if the proxy requires auth (default: `copilot`) |
 | `EMBED_BASE_URL` | embedding | Base URL for the embedding API (e.g. `http://localhost:11434/v1`) |
 | `EMBED_MODEL` | embedding | Embedding model name (e.g. `nomic-embed-text`) |
 | `EMBED_API_KEY` | embedding | API key for the embedding service (defaults to `OPENAI_API_KEY`) |
@@ -1204,6 +1263,7 @@ The index is stored in `.spec-gen/analysis/vector-index/` and is automatically u
   export OPENAI_COMPAT_API_KEY=ollama       # OpenAI-compatible local server
   export GEMINI_API_KEY=...                 # Google Gemini
   ```
+  Or use a CLI-based provider (`claude-code`, `gemini-cli`, `mistral-vibe`) which requires no API key — just the CLI tool on your PATH.
 - `analyze`, `drift`, and `init` require no API key
 
 ## Supported Languages
@@ -1218,8 +1278,6 @@ The index is stored in `.spec-gen/analysis/vector-index/` and is automatically u
 | Java | Full | Full | |
 | C++ | Full | Full | No intra-module imports — cross-file edges synthesised from call graph |
 | Swift | Full | Full | No intra-module imports — cross-file edges synthesised from call graph |
-
-**Note for Swift and C++ projects**: These languages do not use explicit import statements between files in the same module. spec-gen automatically synthesises file-level dependency edges from resolved cross-file call edges, so the flat graph, cluster graph, and architectural views remain meaningful. Capitalised receiver names (`Logger.record()`, `NotificationManager.show()`) are resolved via type-name lookup — no type annotations required.
 
 ## Usage Options
 
@@ -1338,7 +1396,7 @@ npm run test:run     # Run tests (2059 unit tests)
 npm run typecheck    # Type check
 ```
 
-2000+ unit tests covering static analysis, call graph, refactor analysis, spec mapping, drift detection, LLM enhancement, ADR generation, MCP handlers, and the full CLI.
+2050+ unit tests covering static analysis, call graph (including Swift), refactor analysis, spec mapping, drift detection, LLM enhancement, ADR generation, MCP handlers, cross-file edge synthesis, and the full CLI.
 
 ## Links
 
