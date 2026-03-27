@@ -128,13 +128,35 @@ Apply changes in this order:
 1. New types/interfaces (if needed)
 2. Core logic at the insertion point
 3. Updated call sites (if any)
-4. Tests — minimum one test per AC
 
 Do not touch functions outside the scope from Step 2/risk_context without re-running the gate.
 
 ---
 
-## Step 6 — Verify
+## Step 6 — Tests
+
+Two levels, both required before proceeding:
+
+**Mandatory — existing tests must not regress:**
+Run the full test suite. If any pre-existing test breaks, fix the regression before continuing.
+A green CI on existing tests is the minimum gate.
+
+**Recommended — at least one new test per AC:**
+Write a test that directly exercises the new behaviour described in the acceptance criterion.
+This is the proof that the implementation matches the intent — without it, the spec update in Step 7 has no evidence.
+
+| Situation | Action |
+|---|---|
+| All tests green, new tests written | Proceed to Step 7 |
+| Existing test broken | Fix regression. Do not proceed. |
+| New test reveals a misunderstanding of the AC | Return to Step 5, adjust implementation |
+| Brownfield: no existing test coverage | Write the new test anyway. Note the coverage gap in the Dev Agent Record. |
+
+---
+
+## Step 7 — Verify drift
+
+Only run once tests are green.
 
 ```xml
 <use_mcp_tool>
@@ -151,11 +173,18 @@ Do not touch functions outside the scope from Step 2/risk_context without re-run
 | `stale` | Fix the reference |
 | No drift | ✅ |
 
+If drift is found on a domain touched by this story, note it in the Dev Agent Record — the spec update can be proposed after the sprint, not mid-implementation.
+
 ---
 
-## Step 7 — Update the story
+## Step 8 — Update the story
 
 Fill in the **Dev Agent Record** section of the story file and mark as `Review`.
+
+Include:
+- test files written / modified
+- whether existing coverage was sufficient or a gap remains
+- any drift found in Step 7
 
 ---
 
@@ -163,4 +192,5 @@ Fill in the **Dev Agent Record** section of the story file and mark as `Review`.
 
 - Do not write code before Step 4 confirmation
 - If riskScore ≥ 70 was not caught at planning — stop, do not work around it
-- Always run `check_spec_drift` as the final step
+- Do not run `check_spec_drift` before tests are green
+- Do not propose a spec update on untested code
