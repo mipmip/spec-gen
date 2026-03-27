@@ -363,12 +363,6 @@ function buildRiskContextBlock(
     ? Math.max(...validImpacts.map(i => i.riskScore ?? 0))
     : null;
 
-  const riskLevel = maxRisk === null ? 'unknown'
-    : maxRisk <= 20 ? 'low'
-    : maxRisk <= 45 ? 'medium'
-    : maxRisk <= 70 ? 'high'
-    : 'critical';
-
   const badge = maxRisk === null ? '' : ` ${riskBadge(maxRisk)}`;
 
   const lines: string[] = [];
