@@ -32,16 +32,21 @@ vi.mock('./graph.js', () => ({
   handleAnalyzeImpact: vi.fn(async () => ({ error: 'no cache' })),
 }));
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyFn = (...args: any[]) => any;
 const mockFs = {
-  mkdir: vi.fn(async () => undefined),
-  writeFile: vi.fn(async () => undefined),
-  readFile: vi.fn(async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }),
+  mkdir: vi.fn() as ReturnType<typeof vi.fn<AnyFn>>,
+  writeFile: vi.fn() as ReturnType<typeof vi.fn<AnyFn>>,
+  readFile: vi.fn() as ReturnType<typeof vi.fn<AnyFn>>,
 };
 
 vi.mock('node:fs/promises', () => ({
-  mkdir: (...args: unknown[]) => mockFs.mkdir(...args),
-  writeFile: (...args: unknown[]) => mockFs.writeFile(...args),
-  readFile: (...args: unknown[]) => mockFs.readFile(...args),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mkdir: (...args: any[]) => mockFs.mkdir(...args),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  writeFile: (...args: any[]) => mockFs.writeFile(...args),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readFile: (...args: any[]) => mockFs.readFile(...args),
 }));
 
 // ── Imports (after mocks) ─────────────────────────────────────────────────────
