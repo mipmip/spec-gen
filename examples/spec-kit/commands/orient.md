@@ -51,7 +51,27 @@ If orient returns `"error": "no cache"`:
 > first (takes ~1 min), then re-run `/speckit.spec-gen.orient`."
 > Stop here.
 
-## Step 3 — Check existing requirements
+## Step 3 — Check spec baseline
+
+Check whether OpenSpec specifications exist for this project:
+
+```bash
+ls $PROJECT_ROOT/openspec/specs/ 2>/dev/null | head -5
+```
+
+**If no specs exist** (`openspec/specs/` is absent or empty):
+> "No OpenSpec specs found. `search_specs` and `check_spec_drift` will return empty
+> results until specs are generated.
+>
+> Recommended: run `spec-gen generate $PROJECT_ROOT` after this sprint to create a
+> spec baseline from the existing code. You only need to do this once — subsequent
+> sprints will have specs to align against.
+>
+> Continuing with structural analysis only (orient + impact)."
+
+**If specs exist**: proceed to search_specs below.
+
+## Step 4 — Check existing requirements
 
 ```
 spec-gen search_specs
@@ -63,7 +83,10 @@ spec-gen search_specs
 If relevant requirements are found, list them. Note any constraints that apply to the
 planned implementation.
 
-## Step 4 — Impact analysis
+If `search_specs` returns no results despite specs existing, note it — the planned
+change may be in an area not yet covered by specs.
+
+## Step 5 — Impact analysis
 
 For each of the top 2 functions returned by orient:
 
@@ -79,7 +102,7 @@ Build a risk summary table:
 | Function | File | Risk Score | Level | Callers |
 |----------|------|-----------|-------|---------|
 
-## Step 5 — Decision gate
+## Step 6 — Decision gate
 
 | Max risk score | Action |
 |---|---|
@@ -97,7 +120,7 @@ Build a risk summary table:
 >
 > Stop and wait for user confirmation before proceeding.
 
-## Step 6 — Summary
+## Step 7 — Summary
 
 Output a compact block to paste into tasks.md or plan.md as a `## Risk Context` note:
 

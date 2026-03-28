@@ -12,8 +12,11 @@ It compares the implementation against existing OpenSpec specifications and repo
 gaps, stale references, and uncovered files.
 
 > **No specs yet?** If `spec-gen generate` has not been run on this project,
-> this command will report everything as uncovered — that is expected.
-> Run `spec-gen generate` post-sprint to create specs from the new implementation.
+> this command will report everything as uncovered — that is expected and not a problem.
+>
+> **What to do:** Run `spec-gen generate $PROJECT_ROOT` now to create a spec baseline
+> from the current codebase. Once generated, re-run this command — future drift checks
+> will be meaningful. A baseline only needs to be created once.
 
 ## Prerequisites
 
@@ -27,21 +30,40 @@ $ARGUMENTS
 
 If a project directory is provided, use it. Otherwise use the current working directory.
 
-## Step 1 — Confirm tests are green
+## Step 1 — Check spec baseline
+
+```bash
+ls $PROJECT_ROOT/openspec/specs/ 2>/dev/null | wc -l
+```
+
+**If 0 specs found:**
+> "No OpenSpec specs exist yet. Running `check_spec_drift` now will flag all files as
+> uncovered, which is not actionable.
+>
+> Run `spec-gen generate $PROJECT_ROOT` first to create a spec baseline, then re-run
+> this command. The generate step takes a few minutes and only needs to be done once."
+>
+> Ask: "Run `spec-gen generate` now? (yes/no)"
+> - Yes → trigger generate, then proceed to Step 2
+> - No → stop here, remind user to run it before next drift check
+
+**If specs exist**: proceed.
+
+## Step 2 — Confirm tests are green
 
 Ask the user: "Are all tests passing?"
 
 If the answer is no: "Run tests first and fix any failures. Drift check is only
 meaningful on a green test suite." Stop here.
 
-## Step 2 — Run drift check
+## Step 3 — Run drift check
 
 ```
 spec-gen check_spec_drift
   directory: $PROJECT_ROOT
 ```
 
-## Step 3 — Interpret results
+## Step 4 — Interpret results
 
 | Drift type | Meaning | Action |
 |---|---|---|
@@ -50,7 +72,7 @@ spec-gen check_spec_drift
 | `stale` | Spec references a function that no longer exists | Fix the reference in the spec file |
 | No drift | ✅ Implementation matches specs | Done |
 
-## Step 4 — Output
+## Step 5 — Output
 
 Report findings in a compact table. For each gap or uncovered item:
 - Which file / domain is affected

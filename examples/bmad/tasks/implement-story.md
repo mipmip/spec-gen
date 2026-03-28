@@ -72,6 +72,25 @@ Create a blocking refactor story and do not implement until it's resolved.
 
 ## Step 3 — Check the spec
 
+First verify that OpenSpec specs exist for this project:
+
+```bash
+ls $PROJECT_ROOT/openspec/specs/ 2>/dev/null | wc -l
+```
+
+**If 0 specs found:**
+> No OpenSpec specs exist yet for this project. `search_specs` will return empty
+> results and `check_spec_drift` (Step 7) will flag all files as uncovered.
+>
+> The Architect agent should have run `spec-gen generate` during onboarding.
+> If it hasn't been run yet, note it in the Dev Agent Record and proceed with
+> structural analysis only. The spec baseline can be created post-sprint with
+> `spec-gen generate $PROJECT_ROOT`.
+
+Skip `search_specs` and go to Step 4.
+
+**If specs exist:**
+
 ```xml
 <use_mcp_tool>
   <server_name>spec-gen</server_name>

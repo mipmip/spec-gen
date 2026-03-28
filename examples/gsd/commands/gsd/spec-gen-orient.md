@@ -76,6 +76,27 @@ spec-gen analyze_codebase
 Wait for completion, then proceed.
 </step>
 
+<step name="check_spec_baseline">
+Check whether OpenSpec specifications exist:
+
+```bash
+ls $PROJECT_ROOT/openspec/specs/ 2>/dev/null | head -5
+```
+
+**If no specs exist** (`openspec/specs/` absent or empty):
+> "No OpenSpec specs found for this project. `search_specs` will return empty results
+> and `check_spec_drift` will flag all files as uncovered.
+>
+> Recommended: run `spec-gen generate $PROJECT_ROOT` after this phase to create a spec
+> baseline. You only need to do this once — future phases will benefit from spec alignment.
+>
+> Continuing with structural analysis only (orient + impact)."
+
+Skip the search_specs step below and go straight to impact_analysis.
+
+**If specs exist**: proceed to search_specs.
+</step>
+
 <step name="search_specs">
 Surface existing requirements that apply to this change:
 
@@ -87,6 +108,8 @@ spec-gen search_specs
 ```
 
 List any relevant requirements found. Note constraints that apply to the planned implementation.
+If search returns no results despite specs existing, note it in RISK-CONTEXT.md under
+"Relevant Spec Requirements: none matched — area may not be spec'd yet".
 </step>
 
 <step name="impact_analysis">

@@ -82,6 +82,25 @@ blocking refactor task and return to this story once the risk is resolved.
 
 ## Step 3 — Check the spec
 
+First, verify that OpenSpec specs exist:
+
+```bash
+ls $PROJECT_ROOT/openspec/specs/ 2>/dev/null | wc -l
+```
+
+**If 0 specs found:**
+> No OpenSpec specs exist yet. `search_specs` will return empty results and
+> `check_spec_drift` (Step 7) will flag everything as uncovered.
+>
+> Recommended: run `/spec-gen-generate` after this story to create a spec baseline.
+> You only need to do this once.
+>
+> Continuing with structural analysis only.
+
+Skip the `search_specs` call and go to Step 4.
+
+**If specs exist:**
+
 ```xml
 <use_mcp_tool>
   <server_name>spec-gen</server_name>

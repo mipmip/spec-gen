@@ -23,8 +23,10 @@ Run this command:
 - Any time you want to confirm implementation stays aligned with specs
 
 Skip this command:
-- If `spec-gen generate` has never been run (no specs exist yet — everything will show as uncovered)
 - Before verify-work passes (drift check on broken code is not useful)
+
+**If no specs exist yet**: do not skip — use this command to trigger `spec-gen generate`
+and create the baseline. See Step 1.
 </when_to_use>
 
 <prerequisites>
@@ -34,6 +36,27 @@ Skip this command:
 </prerequisites>
 
 <process>
+
+<step name="check_spec_baseline">
+Check whether OpenSpec specs exist:
+
+```bash
+ls $PROJECT_ROOT/openspec/specs/ 2>/dev/null | wc -l
+```
+
+**If 0 specs found:**
+> "No OpenSpec specs exist yet. Running drift check now will flag all files as uncovered,
+> which is not actionable.
+>
+> Run `spec-gen generate $PROJECT_ROOT` to create a baseline from the current codebase.
+> This takes a few minutes and only needs to be done once."
+
+Ask: "Run `spec-gen generate` now? (yes/no)"
+- Yes → run `spec-gen generate $PROJECT_ROOT`, then proceed
+- No → stop, remind user to run before next drift check
+
+**If specs exist**: proceed.
+</step>
 
 <step name="confirm_tests">
 Ask the user: "Are tests passing for this phase?"
