@@ -83,6 +83,7 @@ Do not propose spec updates on untested code.
 | **BMAD** | [`examples/bmad/`](../../examples/bmad/) — agents, tasks, templates, skills |
 | **Mistral Vibe** | [`examples/mistral-vibe/`](../../examples/mistral-vibe/) — reusable skills for analyze, generate, plan-refactor, execute-refactor, implement-story |
 | **spec-kit** | [`examples/spec-kit/`](../../examples/spec-kit/) — extension with `before_implement` / `after_implement` hooks |
+| **get-shit-done** | [`examples/gsd/`](../../examples/gsd/) — `/gsd:spec-gen-orient` + `/gsd:spec-gen-drift` Claude Code commands |
 | Claude Code | Add `orient` + `analyze_impact` calls to your `CLAUDE.md` workflow section |
 | Cursor | See pre-flight `.cursorrules` pattern in this doc |
 
