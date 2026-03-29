@@ -156,8 +156,26 @@ State one recommendation with a single structural reason:
 
 **5d — Confirm**
 
-Do not proceed to Step 6 until the user chooses. If they want a hybrid,
+Do not proceed to Step 5e until the user chooses. If they want a hybrid,
 produce a revised option table.
+
+**5e — Adversarial challenge**
+
+Before writing the story, switch roles: challenge the chosen option as a skeptic.
+
+State exactly 2 failure modes grounded in the structural data:
+
+> "Devil's advocate on Option B:
+> 1. `$CALLER_A` calls `$INSERTION_POINT` with `$EDGE_CASE` — this path is not covered
+>    by the proposed approach and could silently break.
+> 2. The proposal scores risk at $SCORE but `$HUB` (fan-in $N) is one hop away —
+>    a regression there would not be caught until `check_spec_drift`."
+
+Then ask the user: "Do these failure modes change your choice, or should we add
+mitigations to the story constraints?"
+
+Only proceed to Step 6 once the user has acknowledged the failure modes.
+Mitigations go into `## Technical Constraints` in the story.
 
 ---
 

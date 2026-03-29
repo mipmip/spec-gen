@@ -149,6 +149,18 @@ Read the skeleton of the target file:
 
 **Confirm the approach with the user before writing code.**
 
+### Step 4b — Adversarial challenge
+
+Before writing any code, state explicitly what could break with this approach:
+
+> "Risk check on `$INSERTION_POINT`:
+> - `$CALLER_A` and `$CALLER_B` depend on this function — verify their assumptions
+>   hold after the change.
+> - `$EDGE_CASE` is not covered by the current test suite — add it in Step 6."
+
+This is not a gate — do not wait for user input. It is a mandatory self-check
+that must appear in the output before the first line of code is written.
+
 ---
 
 ## Step 5 — Implement
