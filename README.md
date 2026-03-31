@@ -476,6 +476,7 @@ Priority: CLI flags > environment variables > config file > provider defaults.
 | `spec-gen view` | Launch interactive graph & spec viewer in the browser | No |
 | `spec-gen mcp` | Start MCP server (stdio, for Cline / Claude Code) | No |
 | `spec-gen doctor` | Check environment and configuration for common issues | No |
+| `spec-gen refresh-stories` | Re-annotate story files with stale risk context | No |
 
 ### Global Options
 
@@ -830,6 +831,8 @@ All tools run on **pure static analysis** -- no LLM quota consumed.
 | `check_spec_drift` | Detect code changes not reflected in OpenSpec specs. Compares git-changed files against spec coverage maps. Issues: gap / stale / uncovered / orphaned-spec / adr-gap. | Yes (generate) |
 | `search_specs` | Semantic search over OpenSpec specifications to find requirements, design notes, and architecture decisions by meaning. Returns linked source files for graph highlighting. Use this when asked "which spec covers X?" or "where should we implement Z?". Requires a spec index built with `spec-gen analyze` or `--reindex-specs`. | Yes (generate) |
 | `list_spec_domains` | List all OpenSpec domains available in this project. Use this to discover what domains exist before doing a targeted `search_specs` call. | Yes (generate) |
+| `generate_change_proposal` | Given a story/task description, chains `orient` + `search_specs` + `analyze_impact` to produce a structured change proposal at `openspec/changes/{slug}/proposal.md` with affected domains, risk scores, and insertion points. | Yes |
+| `annotate_story` | Reads a story/task markdown file, runs structural analysis, and patches a `## Risk Context` section in-place with domains, risk scores, blocking refactors, and insertion points. | Yes |
 
 ### Parameters
 
@@ -1005,6 +1008,21 @@ domain     string   Filter by domain name (e.g. "auth", "analyzer")
 section    string   Filter by section type: "requirements" | "purpose" | "design" | "architecture" | "entities"
 ```
 
+**`generate_change_proposal`**
+```
+directory     string   Absolute path to the project directory
+description   string   Natural-language description of the change (story, intent, or spec delta)
+slug          string   URL-safe identifier for the proposal (e.g. "add-payment-retry")
+storyContent  string   Optional full story markdown to embed in the proposal
+```
+
+**`annotate_story`**
+```
+directory      string   Absolute path to the project directory
+storyFilePath  string   Path to the story file (relative to project root or absolute)
+description    string   Natural-language summary of the story for structural analysis
+```
+
 ### Typical workflow
 
 **Scenario A -- Initial exploration**
@@ -1044,6 +1062,17 @@ section    string   Filter by section type: "requirements" | "purpose" | "design
 2. get_spec({ directory, domain: "..." })             # read full spec before writing code
 3. check_spec_drift({ directory })                    # verify after implementation
 ```
+
+**Scenario E -- Agentic workflow (risk-gated implementation)**
+```
+1. generate_change_proposal({ directory, description, slug })  # proposal.md with risk + domains
+2. annotate_story({ directory, storyFilePath, description })   # patch story with risk_context
+3. orient({ directory, task: "..." })                          # scope functions + insertion points
+4. analyze_impact({ directory, symbol: "topFunction" })        # confirm risk before coding
+5. check_spec_drift({ directory })                             # verify after implementation
+```
+
+See [docs/agentic-workflows/](docs/agentic-workflows/) for full integration patterns with BMAD, Mistral Vibe, spec-kit, and Claude Code.
 
 ## Interactive Graph Viewer
 
@@ -1385,6 +1414,10 @@ for (const [key, req] of Object.entries(requirements)) {
 | [examples/openspec-analysis/](examples/openspec-analysis/) | Static analysis output from `spec-gen analyze` |
 | [examples/openspec-cli/](examples/openspec-cli/) | Specifications generated with `spec-gen generate` |
 | [examples/drift-demo/](examples/drift-demo/) | Sample project configured for drift detection |
+| [examples/bmad/](examples/bmad/) | BMAD Method integration — agents, tasks, templates for brownfield codebases |
+| [examples/mistral-vibe/](examples/mistral-vibe/) | Mistral Vibe skills for analyze, generate, plan-refactor, implement-story |
+| [examples/spec-kit/](examples/spec-kit/) | spec-kit extension with `before_implement` / `after_implement` hooks |
+| [examples/gsd/](examples/gsd/) | Get-Shit-Done Claude Code commands for orient + drift |
 
 ## Development
 
@@ -1392,11 +1425,11 @@ for (const [key, req] of Object.entries(requirements)) {
 npm install          # Install dependencies
 npm run dev          # Development mode (watch)
 npm run build        # Build
-npm run test:run     # Run tests (2059 unit tests)
+npm run test:run     # Run tests (2200+ unit tests)
 npm run typecheck    # Type check
 ```
 
-2050+ unit tests covering static analysis, call graph (including Swift), refactor analysis, spec mapping, drift detection, LLM enhancement, ADR generation, MCP handlers, cross-file edge synthesis, and the full CLI.
+2200+ unit tests covering static analysis, call graph (including Swift), refactor analysis, spec mapping, drift detection, LLM enhancement, ADR generation, MCP handlers, change proposals, cross-file edge synthesis, and the full CLI.
 
 ## Links
 
@@ -1406,5 +1439,6 @@ npm run typecheck    # Type check
 - [OpenSpec Integration](docs/OPENSPEC-INTEGRATION.md) - How spec-gen integrates with OpenSpec
 - [OpenSpec Format](docs/OPENSPEC-FORMAT.md) - Spec format reference
 - [Philosophy](docs/PHILOSOPHY.md) - "Archaeology over Creativity"
+- [Agentic Workflows](docs/agentic-workflows/) - Integration patterns for BMAD, Mistral Vibe, spec-kit, GSD
 - [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
 - [AGENTS.md](AGENTS.md) - LLM system prompt for direct prompting

@@ -11,8 +11,8 @@
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import { validateDirectory } from './utils.js';
+import { join } from 'node:path';
+import { validateDirectory, safeJoin } from './utils.js';
 import { handleOrient } from './orient.js';
 import { handleSearchSpecs } from './semantic.js';
 import { handleAnalyzeImpact } from './graph.js';
@@ -79,9 +79,9 @@ function strategyText(s: ImpactResult['recommendedStrategy']): string {
 }
 
 function riskBadge(score: number): string {
-  if (score <= 20) return '🟢 low';
-  if (score <= 45) return '🟡 medium';
-  if (score <= 70) return '🟠 high';
+  if (score < 40) return '🟢 low';
+  if (score < 70) return '🟡 medium';
+  if (score < 85) return '🟠 high';
   return '🔴 critical';
 }
 
@@ -344,7 +344,7 @@ export async function handleGenerateChangeProposal(
     requirementsTouched: (specSearch.results ?? []).length,
     maxRiskScore: maxRisk,
     riskLevel: maxRisk !== null
-      ? (maxRisk <= 20 ? 'low' : maxRisk <= 45 ? 'medium' : maxRisk <= 70 ? 'high' : 'critical')
+      ? (maxRisk < 40 ? 'low' : maxRisk < 70 ? 'medium' : maxRisk < 85 ? 'high' : 'critical')
       : 'unknown',
     nextStep: `Review and complete openspec/changes/${safeSlug}/proposal.md, then run: openspec specs ${safeSlug}`,
     orientErrors: orient.error ? [orient.error] : [],
@@ -484,10 +484,8 @@ export async function handleAnnotateStory(
 ): Promise<unknown> {
   const absDir = await validateDirectory(directory);
 
-  // Resolve story path — accept both relative (to project) and absolute
-  const absStory = storyFilePath.startsWith('/')
-    ? storyFilePath
-    : resolve(absDir, storyFilePath);
+  // Resolve story path and ensure it stays within the project directory
+  const absStory = safeJoin(absDir, storyFilePath);
 
   let original: string;
   try {
@@ -499,11 +497,8 @@ export async function handleAnnotateStory(
   const generatedAt = new Date().toISOString().split('T')[0];
 
   // ── Structural analysis (same pattern as generate_change_proposal) ─────────
-  const [orientRaw, ] = await Promise.all([
-    handleOrient(directory, description, 7),
-    // spec search not needed for risk_context — orient already returns linked specs
-  ]);
-  const orient = orientRaw as OrientResult;
+  // spec search not needed for risk_context — orient already returns linked specs
+  const orient = await handleOrient(directory, description, 7) as OrientResult;
 
   const topFunctions = (orient.relevantFunctions ?? []).slice(0, 2);
   const impacts: ImpactResult[] = [];
@@ -533,9 +528,9 @@ export async function handleAnnotateStory(
     functionsFound: (orient.relevantFunctions ?? []).length,
     maxRiskScore: maxRisk,
     riskLevel: maxRisk === null ? 'unknown'
-      : maxRisk <= 20 ? 'low'
-      : maxRisk <= 45 ? 'medium'
-      : maxRisk <= 70 ? 'high'
+      : maxRisk < 40 ? 'low'
+      : maxRisk < 70 ? 'medium'
+      : maxRisk < 85 ? 'high'
       : 'critical',
     blocked: maxRisk !== null && maxRisk >= 70,
     orientErrors: orient.error ? [orient.error] : [],

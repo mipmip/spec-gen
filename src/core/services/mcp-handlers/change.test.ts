@@ -13,6 +13,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./utils.js', () => ({
   validateDirectory: vi.fn(async (dir: string) => dir),
+  safeJoin: vi.fn((absDir: string, filePath: string) => {
+    const { resolve, sep } = require('node:path');
+    const resolved = resolve(absDir, filePath);
+    if (!resolved.startsWith(absDir + sep) && resolved !== absDir) {
+      throw new Error(`Path traversal blocked: "${filePath}" resolves outside project directory`);
+    }
+    return resolved;
+  }),
 }));
 
 vi.mock('./orient.js', () => ({
@@ -144,7 +152,7 @@ describe('handleGenerateChangeProposal', () => {
       specDomains: [],
       insertionPoints: [],
     });
-    // thresholds: ≤ 20 low, ≤ 45 medium, ≤ 70 high, > 70 critical
+    // thresholds: < 40 low, < 70 medium, < 85 high, >= 85 critical
     mockImpact.mockResolvedValue({ symbol: 'fn', riskScore: 40, riskLevel: 'medium' });
 
     const result = await handleGenerateChangeProposal('/proj', 'desc', 'my-story') as Record<string, unknown>;
@@ -319,12 +327,12 @@ As a user I want payments to retry automatically.
       specDomains: [],
       insertionPoints: [],
     });
-    // thresholds: > 70 → critical
-    mockImpact.mockResolvedValue({ symbol: 'hub', riskScore: 75, riskLevel: 'critical' });
+    // thresholds: < 40 low, < 70 medium, < 85 high, >= 85 critical
+    mockImpact.mockResolvedValue({ symbol: 'hub', riskScore: 75, riskLevel: 'high' });
 
     const result = await handleAnnotateStory('/proj', STORY_PATH, 'desc') as Record<string, unknown>;
     expect(result.blocked).toBe(true);
-    expect(result.riskLevel).toBe('critical');
+    expect(result.riskLevel).toBe('high');
   });
 
   it('returns blocked: false for low risk', async () => {
