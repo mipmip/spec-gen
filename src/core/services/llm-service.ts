@@ -18,6 +18,7 @@ import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
   DEFAULT_OPENAI_COMPAT_MODEL,
+  DEFAULT_COPILOT_MODEL,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_LLM_MAX_RETRIES,
   DEFAULT_LLM_INITIAL_DELAY_MS,
@@ -254,7 +255,7 @@ export interface LLMProvider {
   maxOutputTokens: number;
 }
 
-export type ProviderName = 'anthropic' | 'openai' | 'openai-compat' | 'gemini' | 'gemini-cli' | 'claude-code' | 'mistral-vibe';
+export type ProviderName = 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'gemini-cli' | 'claude-code' | 'mistral-vibe';
 
 /**
  * Token usage tracking
@@ -469,6 +470,10 @@ const PRICING: Record<string, Record<string, { input: number; output: number }>>
   },
   'gemini-cli': {
     // No per-token cost: covered by Google account free tier
+    default: { input: 0, output: 0 },
+  },
+  copilot: {
+    // No per-token cost: covered by GitHub Copilot subscription
     default: { input: 0, output: 0 },
   },
 };
@@ -734,6 +739,103 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private baseUrl: string;
 
   constructor(apiKey: string, baseUrl: string, model = DEFAULT_OPENAI_COMPAT_MODEL) {
+    this.apiKey = apiKey;
+    this.baseUrl = normalizeApiBase(baseUrl);
+    this.model = model;
+  }
+
+  countTokens(text: string): number {
+    return estimateTokens(text);
+  }
+
+  async generateCompletion(request: CompletionRequest): Promise<CompletionResponse> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages: [
+        { role: 'system', content: request.systemPrompt },
+        { role: 'user', content: request.userPrompt },
+      ],
+      max_tokens: request.maxTokens ?? this.maxOutputTokens,
+      temperature: request.temperature ?? 0.3,
+      ...(request.stopSequences && { stop: request.stopSequences }),
+    };
+
+    if (request.responseFormat === 'json' && request.jsonSchema) {
+      body.response_format = {
+        type: 'json_schema',
+        json_schema: {
+          name: 'response',
+          schema: request.jsonSchema,
+        },
+      };
+    } else if (request.responseFormat === 'json') {
+      body.response_format = { type: 'json_object' };
+    }
+
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      const err = new Error(error) as Error & { status?: number; retryable?: boolean; retryAfterMs?: number };
+      err.status = response.status;
+      err.retryable = response.status === 429 || response.status >= 500;
+      if (response.status === 429) {
+        err.retryAfterMs = parseRetryAfterMs(error, response.headers.get('retry-after'));
+      }
+      throw err;
+    }
+
+    const data = await response.json() as {
+      choices: Array<{ message: { content: string }; finish_reason: string }>;
+      usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+      model: string;
+    };
+
+    return {
+      content: data.choices[0]?.message?.content ?? '',
+      usage: {
+        inputTokens: data.usage.prompt_tokens,
+        outputTokens: data.usage.completion_tokens,
+        totalTokens: data.usage.total_tokens,
+      },
+      model: data.model ?? this.model,
+      finishReason: data.choices[0]?.finish_reason === 'stop' ? 'stop' : data.choices[0]?.finish_reason === 'length' ? 'length' : 'error',
+    };
+  }
+}
+
+// ============================================================================
+// COPILOT PROVIDER (via copilot-api proxy — OpenAI-compatible)
+// ============================================================================
+
+/**
+ * GitHub Copilot provider via copilot-api proxy.
+ * Requires a running copilot-api proxy (https://github.com/ericc-ch/copilot-api)
+ * which exposes an OpenAI-compatible /v1/chat/completions endpoint.
+ *
+ * Required env vars:
+ *   COPILOT_API_BASE_URL — Base URL of the copilot-api proxy (default: http://localhost:4141/v1)
+ *
+ * Optional env vars:
+ *   COPILOT_API_KEY      — API key if the proxy requires auth (default: "copilot")
+ */
+export class CopilotProvider implements LLMProvider {
+  name = 'copilot';
+  maxContextTokens = 128000;
+  maxOutputTokens = 4096;
+
+  private apiKey: string;
+  private model: string;
+  private baseUrl: string;
+
+  constructor(baseUrl: string, model = DEFAULT_COPILOT_MODEL, apiKey = 'copilot') {
     this.apiKey = apiKey;
     this.baseUrl = normalizeApiBase(baseUrl);
     this.model = model;
@@ -1466,6 +1568,10 @@ export function createLLMService(options: LLMServiceOptions = {}): LLMService {
       throw new Error('openaiCompatBaseUrl must be set in config or OPENAI_COMPAT_BASE_URL env var (e.g. https://api.mistral.ai/v1)');
     }
     provider = new OpenAICompatibleProvider(apiKey, baseUrl, options.model ?? DEFAULT_OPENAI_COMPAT_MODEL);
+  } else if (providerName === 'copilot') {
+    const baseUrl = options.openaiCompatBaseUrl ?? options.apiBase ?? process.env.COPILOT_API_BASE_URL ?? 'http://localhost:4141/v1';
+    const apiKey = process.env.COPILOT_API_KEY ?? 'copilot';
+    provider = new CopilotProvider(baseUrl, options.model ?? DEFAULT_COPILOT_MODEL, apiKey);
   } else if (providerName === 'gemini') {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -1479,7 +1585,7 @@ export function createLLMService(options: LLMServiceOptions = {}): LLMService {
   } else if (providerName === 'gemini-cli') {
     provider = new GeminiCLIProvider(options.model);
   } else {
-    throw new Error(`Unknown provider: ${providerName}. Supported: anthropic, openai, openai-compat, gemini, gemini-cli, claude-code, mistral-vibe`);
+    throw new Error(`Unknown provider: ${providerName}. Supported: anthropic, openai, openai-compat, copilot, gemini, gemini-cli, claude-code, mistral-vibe`);
   }
 
   if (!sslVerify) {

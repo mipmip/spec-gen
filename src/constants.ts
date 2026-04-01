@@ -83,6 +83,7 @@ export const ARTIFACT_GENERATION_REPORT = 'generation-report.json';
 
 /** Filename for the shutdown state file */
 export const ARTIFACT_SHUTDOWN_STATE = 'shutdown-state.json';
+export const ARTIFACT_RAG_MANIFEST = 'rag-manifest.json';
 
 /** Filename for the spec coverage snapshot artifact */
 export const ARTIFACT_SPEC_SNAPSHOT = 'spec-snapshot.json';
@@ -162,6 +163,7 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
 export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
 export const DEFAULT_OPENAI_COMPAT_MODEL = 'mistral-large-latest';
 export const DEFAULT_GEMINI_MODEL = 'gemini-2.0-flash';
+export const DEFAULT_COPILOT_MODEL = 'gpt-4o';
 /** Lighter model used for interactive chat (lower cost, faster) */
 export const DEFAULT_CHAT_OPENAI_MODEL = 'gpt-4o-mini';
 

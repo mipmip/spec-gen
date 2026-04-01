@@ -387,7 +387,11 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
   // Compute from clusters if not present in the JSON (for backward compatibility).
   const structuralClusters = graph?.structuralClusters ??
     (graph?.clusters?.filter(c => c.internalEdges > 0) ?? []);
-  const displayClusters = structuralClusters;
+  // Fall back to all directory clusters when no structural ones exist (e.g. Swift/C++ projects
+  // where dep edges come from the call graph and may not yet be available).
+  const displayClusters = structuralClusters.length > 0
+    ? structuralClusters
+    : (graph?.clusters ?? []);
   const clusterNames = displayClusters.map((c) => c.name);
 
   // ── Upload screen ─────────────────────────────────────────────────────────
@@ -523,7 +527,7 @@ export default function App({ graphUrl, mappingUrl = '/api/mapping', specUrl = '
         {[
           ['nodes', stats.nodeCount],
           ['edges', stats.edgeCount],
-          ['clusters', stats.structuralClusterCount ?? displayClusters.length],
+          ['clusters', displayClusters.length],
         ].map(([l, v]) => (
           <div
             key={l}

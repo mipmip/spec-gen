@@ -34,7 +34,7 @@ export interface McpWatcherOptions {
   ignore?: string[];
 }
 
-const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|py|go|rs|rb|java|kt|php|cs|cpp|cc|cxx|h|hpp|c)$/;
+const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|py|go|rs|rb|java|kt|php|cs|cpp|cc|cxx|h|hpp|c|swift)$/;
 
 const DEFAULT_IGNORED = [
   '**/node_modules/**',

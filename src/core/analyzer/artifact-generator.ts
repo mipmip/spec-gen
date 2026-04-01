@@ -20,7 +20,7 @@ import {
 import type { ScoredFile, ProjectType } from '../../types/index.js';
 import type { RepositoryMap } from './repository-mapper.js';
 import type { DependencyGraphResult } from './dependency-graph.js';
-import { toMermaidFormat } from './dependency-graph.js';
+import { toMermaidFormat, injectCallGraphEdges, IMPLICIT_IMPORT_LANGS } from './dependency-graph.js';
 
 /**
  * Heuristic to detect test/spec files across languages.
@@ -969,7 +969,7 @@ export class AnalysisArtifactGenerator {
     const { detectDuplicates } = await import('./duplicate-detector.js');
     const { analyzeForRefactoring } = await import('./refactor-analyzer.js');
 
-    const CALL_GRAPH_LANGS = new Set(['Python', 'TypeScript', 'JavaScript', 'Go', 'Rust', 'Ruby', 'Java', 'C++']);
+    const CALL_GRAPH_LANGS = new Set(['Python', 'TypeScript', 'JavaScript', 'Go', 'Rust', 'Ruby', 'Java', 'C++', 'Swift']);
     const signatures: import('./signature-extractor.js').FileSignatureMap[] = [];
     const callGraphFiles: Array<{ path: string; content: string; language: string }> = [];
 
@@ -989,7 +989,7 @@ export class AnalysisArtifactGenerator {
         // Call graph — all supported languages, exclude test files
         const lang = detectLanguage(file.path);
         if (!isTest && CALL_GRAPH_LANGS.has(lang)) {
-          callGraphFiles.push({ path: file.path, content, language: lang });
+          callGraphFiles.push({ path: file.absolutePath, content, language: lang });
         }
       } catch {
         // skip unreadable files
@@ -1000,6 +1000,17 @@ export class AnalysisArtifactGenerator {
     const builder = new CallGraphBuilder();
     const callGraphResult = await builder.build(callGraphFiles);
     const callGraph = serializeCallGraph(callGraphResult);
+
+    // For languages without intra-module imports (Swift, C++, …), the dependency
+    // graph has no import edges. Synthesize file-level dependency edges from the
+    // call graph so the viewer shows a meaningful graph.
+    const hasImplicitImportFiles = callGraphFiles.some(f => IMPLICIT_IMPORT_LANGS.has(f.language));
+    if (hasImplicitImportFiles && depGraph.statistics.importEdgeCount === 0) {
+      const nodeMap = new Map<string, string>(
+        Array.from(callGraphResult.nodes.values()).map(n => [n.id, n.filePath])
+      );
+      injectCallGraphEdges(depGraph, callGraphResult.edges, id => nodeMap.get(id));
+    }
 
     // Duplicate detection — static analysis, no LLM (Types 1-2-3)
     const duplicates = detectDuplicates(callGraphFiles, callGraphResult);

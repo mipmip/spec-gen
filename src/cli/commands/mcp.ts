@@ -44,6 +44,7 @@ import {
   handleSearchSpecs,
   handleListSpecDomains,
   handleGetSpec,
+  handleUnifiedSearch,
 } from '../../core/services/mcp-handlers/semantic.js';
 import { handleOrient } from '../../core/services/mcp-handlers/orient.js';
 import { handleGenerateChangeProposal, handleAnnotateStory } from '../../core/services/mcp-handlers/change.js';
@@ -240,9 +241,11 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'get_subgraph',
     description:
-      'Extract a subgraph of the call graph centred on a specific function. ' +
+      'Extract a subgraph of the call graph centred on ONE specific function. ' +
+      'Call once per function — do not combine multiple function names in a single call. ' +
       'Useful for impact analysis ("what does X call?"), dependency tracing ' +
       '("who calls X?"), or understanding a change\'s blast radius. ' +
+      'Prefer maxDepth 1 or 2; depth ≥ 3 on large projects may timeout. ' +
       'Run analyze_codebase first.',
     inputSchema: {
       type: 'object',
@@ -253,7 +256,7 @@ export const TOOL_DEFINITIONS = [
         },
         functionName: {
           type: 'string',
-          description: 'Name of the function to centre the subgraph on (exact or partial match)',
+          description: 'Name of a single function to centre the subgraph on (exact name preferred; partial substring also accepted)',
         },
         direction: {
           type: 'string',
@@ -265,7 +268,7 @@ export const TOOL_DEFINITIONS = [
         },
         maxDepth: {
           type: 'number',
-          description: 'Maximum traversal depth (default: 3)',
+          description: 'Maximum traversal depth (default: 3, recommended: 1–2 to avoid timeout)',
         },
         format: {
           type: 'string',
@@ -653,6 +656,46 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'search_unified',
+    description:
+      'USE THIS WHEN: you want to find where something is implemented AND what the spec says about it ' +
+      'in a single call. Searches both code functions and spec requirements simultaneously, then ' +
+      'cross-boosts results that are linked through mapping.json — so a function that implements a ' +
+      'matching requirement ranks higher than one found by code search alone. ' +
+      'Returns results with type "code", "spec", or "both" and a mappingBoost score. ' +
+      'Requires "spec-gen analyze --embed" and a prior "spec-gen generate" run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Absolute path to the project directory',
+        },
+        query: {
+          type: 'string',
+          description: 'Natural language query, e.g. "validate user authentication"',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of results to return (default: 10)',
+        },
+        language: {
+          type: 'string',
+          description: 'Filter code results by language (e.g. "TypeScript")',
+        },
+        domain: {
+          type: 'string',
+          description: 'Filter spec results by domain name',
+        },
+        section: {
+          type: 'string',
+          description: 'Filter spec results by section type: "requirements", "purpose", etc.',
+        },
+      },
+      required: ['directory', 'query'],
+    },
+  },
+  {
     name: 'get_spec',
     description:
       'Return the full content of a spec domain\'s specification file (spec.md) and the ' +
@@ -952,6 +995,10 @@ async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
         const { directory, query, limit = 10, domain, section } =
           args as { directory: string; query: string; limit?: number; domain?: string; section?: string };
         result = await handleSearchSpecs(directory, query, limit, domain, section);
+      } else if (name === 'search_unified') {
+        const { directory, query, limit = 10, language, domain, section } =
+          args as { directory: string; query: string; limit?: number; language?: string; domain?: string; section?: string };
+        result = await handleUnifiedSearch(directory, query, limit, language, domain, section);
       } else if (name === 'list_spec_domains') {
         const { directory } = args as { directory: string };
         result = await handleListSpecDomains(directory);

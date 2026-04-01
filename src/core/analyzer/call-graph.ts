@@ -2,7 +2,7 @@
  * Call Graph Analyzer
  *
  * Performs static analysis of function calls across source files using tree-sitter.
- * Supports TypeScript/JavaScript, Python, Go, Rust, Ruby, Java — no LLM, pure AST.
+ * Supports TypeScript/JavaScript, Python, Go, Rust, Ruby, Java, Swift — no LLM, pure AST.
  *
  * Produces:
  *  - FunctionNode[]  — all identified functions/methods
@@ -28,7 +28,8 @@ export type EdgeConfidence =
   | 'import'         // callee was imported from a known file
   | 'http_endpoint'  // cross-language HTTP route match
   | 'same_file'      // multiple candidates; same-file wins
-  | 'name_only';     // last-resort: pick first candidate by name
+  | 'name_only'      // last-resort: pick first candidate by name
+  | 'type_name';     // Swift/C++ capitalized receiver treated as type name
 
 /** Internal raw edge before resolution */
 interface RawEdge {
@@ -180,6 +181,11 @@ const IGNORED_CALLEES = new Set([
   'extend', 'attr_accessor', 'attr_reader', 'attr_writer',
   // Java common
   'toString', 'equals', 'hashCode', 'getClass', 'println', 'printf',
+  // Swift stdlib / builtins
+  'print', 'debugPrint', 'dump', 'fatalError', 'precondition', 'preconditionFailure',
+  'assert', 'assertionFailure', 'withUnsafePointer', 'withUnsafeMutablePointer',
+  'DispatchQueue', 'main', 'async', 'sync', 'append', 'remove', 'insert', 'contains',
+  'map', 'filter', 'reduce', 'forEach', 'compactMap', 'flatMap', 'sorted', 'first', 'last',
   // C++ stdlib / builtins
   'cout', 'cin', 'cerr', 'endl', 'malloc', 'free', 'memcpy', 'memset', 'memcmp',
   'strlen', 'strcpy', 'strcat', 'strcmp', 'sprintf', 'snprintf', 'fprintf',
@@ -208,6 +214,7 @@ let _rustParser: Parser | undefined;
 let _rubyParser: Parser | undefined;
 let _javaParser: Parser | undefined;
 let _cppParser: Parser | undefined;
+let _swiftParser: Parser | undefined;
 let _TsLanguage: object | undefined;
 let _PyLanguage: object | undefined;
 let _GoLanguage: object | undefined;
@@ -215,6 +222,7 @@ let _RustLanguage: object | undefined;
 let _RubyLanguage: object | undefined;
 let _JavaLanguage: object | undefined;
 let _CppLanguage: object | undefined;
+let _SwiftLanguage: object | undefined;
 
 async function getTSParser(): Promise<{ parser: Parser; lang: object }> {
   if (!_tsParser) {
@@ -284,6 +292,16 @@ async function getCppParser(): Promise<{ parser: Parser; lang: object }> {
     (_cppParser as Parser).setLanguage(_CppLanguage as unknown as Parser.Language);
   }
   return { parser: _cppParser!, lang: _CppLanguage! };
+}
+
+async function getSwiftParser(): Promise<{ parser: Parser; lang: object }> {
+  if (!_swiftParser) {
+    const swiftModule = await import('tree-sitter-swift');
+    _SwiftLanguage = swiftModule.default;
+    _swiftParser = new Parser();
+    (_swiftParser as Parser).setLanguage(_SwiftLanguage as unknown as Parser.Language);
+  }
+  return { parser: _swiftParser!, lang: _SwiftLanguage! };
 }
 
 // ============================================================================
@@ -410,8 +428,8 @@ function extractDocstringBefore(
     return lines.find(l => l.length > 0) ?? undefined;
   }
 
-  // ── Rust: /// doc comment lines immediately before ───────────────────────
-  if (language === 'Rust') {
+  // ── Rust / Swift: /// doc comment lines immediately before ─────────────
+  if (language === 'Rust' || language === 'Swift') {
     const lines: string[] = [];
     let lineEnd = pos;
     while (lineEnd >= 0) {
@@ -1298,6 +1316,120 @@ async function extractCppGraph(
 }
 
 // ============================================================================
+// SWIFT EXTRACTOR
+// ============================================================================
+
+// function_declaration covers free functions and methods inside class_body
+const SWIFT_FN_QUERY = `
+  (function_declaration
+    name: (simple_identifier) @fn.name) @fn.node
+
+  (init_declaration) @fn.node
+`;
+
+// Direct calls: foo()
+const SWIFT_CALL_DIRECT_QUERY = `
+  (call_expression
+    (simple_identifier) @call.name) @call.node
+`;
+
+// Method calls: obj.method() / self.method()
+const SWIFT_CALL_NAV_QUERY = `
+  (call_expression
+    (navigation_expression
+      (navigation_suffix
+        (simple_identifier) @call.name))) @call.node
+`;
+
+async function extractSwiftGraph(
+  filePath: string,
+  content: string
+): Promise<{ nodes: FunctionNode[]; rawEdges: RawEdge[] }> {
+  const { parser, lang } = await getSwiftParser();
+  const tree = (parser as Parser).parse(content);
+
+  const fnQuery = new Parser.Query(lang as unknown as Parser.Language, SWIFT_FN_QUERY);
+  const directCallQuery = new Parser.Query(lang as unknown as Parser.Language, SWIFT_CALL_DIRECT_QUERY);
+  const navCallQuery = new Parser.Query(lang as unknown as Parser.Language, SWIFT_CALL_NAV_QUERY);
+
+  const nodes: FunctionNode[] = [];
+  for (const match of fnQuery.matches(tree.rootNode)) {
+    const nameCapture = match.captures.find(c => c.name === 'fn.name');
+    const nodeCapture = match.captures.find(c => c.name === 'fn.node');
+    if (!nodeCapture) continue;
+
+    const fnNode = nodeCapture.node;
+    const name = nameCapture?.node.text ?? 'init';
+
+    // Find enclosing class/struct/actor/enum/extension (all are class_declaration in this grammar)
+    let className: string | undefined;
+    let cursor = fnNode.parent;
+    while (cursor) {
+      if (cursor.type === 'class_declaration') {
+        const nameNode = cursor.children.find(c => c.type === 'type_identifier');
+        if (nameNode) className = nameNode.text;
+        break;
+      }
+      cursor = cursor.parent;
+    }
+
+    const isAsync = content.slice(fnNode.startIndex, fnNode.endIndex).includes(' async ');
+    const id = className ? `${filePath}::${className}.${name}` : `${filePath}::${name}`;
+
+    nodes.push({
+      id, name, filePath, className,
+      isAsync,
+      language: 'Swift',
+      startIndex: fnNode.startIndex,
+      endIndex: fnNode.endIndex,
+      fanIn: 0, fanOut: 0,
+      docstring: extractDocstringBefore(content, fnNode.startIndex, 'Swift'),
+      signature: extractDeclaration(content, fnNode.startIndex, fnNode.endIndex, 'Swift'),
+    });
+  }
+
+  const rawEdges: RawEdge[] = [];
+
+  // Direct calls: foo()
+  for (const match of directCallQuery.matches(tree.rootNode)) {
+    const nameCapture = match.captures.find(c => c.name === 'call.name');
+    const nodeCapture = match.captures.find(c => c.name === 'call.node');
+    if (!nameCapture || !nodeCapture) continue;
+
+    const calleeName = nameCapture.node.text;
+    if (isIgnoredCallee(calleeName)) continue;
+
+    const caller = findEnclosingFunction(nodes, nodeCapture.node.startIndex);
+    if (!caller) continue;
+
+    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1 });
+  }
+
+  // Method calls: obj.method() / self.method()
+  for (const match of navCallQuery.matches(tree.rootNode)) {
+    const nameCapture = match.captures.find(c => c.name === 'call.name');
+    const nodeCapture = match.captures.find(c => c.name === 'call.node');
+    if (!nameCapture || !nodeCapture) continue;
+
+    const calleeName = nameCapture.node.text;
+    if (isIgnoredCallee(calleeName)) continue;
+
+    const caller = findEnclosingFunction(nodes, nodeCapture.node.startIndex);
+    if (!caller) continue;
+
+    // Extract the receiver object (first child of navigation_expression)
+    const navExpr = nodeCapture.node.firstChild;
+    const objText = navExpr?.firstChild?.type === 'self_expression'
+      ? 'self'
+      : navExpr?.firstChild?.text;
+
+    rawEdges.push({ callerId: caller.id, calleeName, line: nodeCapture.node.startPosition.row + 1, calleeObject: objText });
+  }
+
+  return { nodes, rawEdges };
+}
+
+// ============================================================================
 // CLASS HIERARCHY EXTRACTION
 // ============================================================================
 
@@ -1589,6 +1721,8 @@ export class CallGraphBuilder {
           result = await extractJavaGraph(file.path, file.content);
         } else if (file.language === 'C++') {
           result = await extractCppGraph(file.path, file.content);
+        } else if (file.language === 'Swift') {
+          result = await extractSwiftGraph(file.path, file.content);
         } else {
           continue;
         }
@@ -1626,6 +1760,19 @@ export class CallGraphBuilder {
         if (callerNode.className) {
           const candidates = trie.findByQualifiedName(callerNode.className, raw.calleeName);
           if (candidates.length > 0) { calleeNode = candidates[0]; confidence = 'self_cls'; }
+        }
+      }
+
+      // Strategy 1b — Swift/C++ type-name resolution (capitalized receiver = type/class reference)
+      // In Swift and C++, there are no intra-module imports, so cross-file calls appear as
+      // TypeName.method() or TypeName::method(). A capitalized receiver with no same-file
+      // class of that name is a reliable signal for a cross-file type reference.
+      if (!calleeNode && raw.calleeObject && (callerNode.language === 'Swift' || callerNode.language === 'C++')) {
+        const ch = raw.calleeObject.charCodeAt(0);
+        const isCapitalized = ch >= 65 && ch <= 90; // A-Z
+        if (isCapitalized) {
+          const candidates = trie.findByQualifiedName(raw.calleeObject, raw.calleeName);
+          if (candidates.length > 0) { calleeNode = candidates[0]; confidence = 'type_name'; }
         }
       }
 

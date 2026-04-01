@@ -53,7 +53,12 @@ export interface InsertionCandidate {
   isEntryPoint: boolean;
 }
 
-export function classifyRole(fanIn: number, fanOut: number, isHub: boolean, isEntryPoint: boolean): InsertionRole {
+export function classifyRole(
+  fanIn: number,
+  fanOut: number,
+  isHub: boolean,
+  isEntryPoint: boolean
+): InsertionRole {
   if (isEntryPoint) return 'entry_point';
   if (isHub) return 'hub';
   if (fanOut >= INSERTION_ORCHESTRATOR_FAN_OUT_THRESHOLD) return 'orchestrator';
@@ -63,11 +68,16 @@ export function classifyRole(fanIn: number, fanOut: number, isHub: boolean, isEn
 
 export function deriveStrategy(role: InsertionRole): InsertionStrategy {
   switch (role) {
-    case 'entry_point':  return 'extend_entry_point';
-    case 'orchestrator': return 'add_orchestration_step';
-    case 'hub':          return 'cross_cutting_hook';
-    case 'utility':      return 'extract_shared_logic';
-    default:             return 'call_alongside';
+    case 'entry_point':
+      return 'extend_entry_point';
+    case 'orchestrator':
+      return 'add_orchestration_step';
+    case 'hub':
+      return 'cross_cutting_hook';
+    case 'utility':
+      return 'extract_shared_logic';
+    default:
+      return 'call_alongside';
   }
 }
 
@@ -102,11 +112,11 @@ export function buildReason(
 export function compositeScore(semanticRelevance: number, role: InsertionRole): number {
   const semantic = Math.max(0, Math.min(1, semanticRelevance));
   const structuralBonus: Record<InsertionRole, number> = {
-    entry_point:  INSERTION_ROLE_BONUS_ENTRY_POINT,
+    entry_point: INSERTION_ROLE_BONUS_ENTRY_POINT,
     orchestrator: INSERTION_ROLE_BONUS_ORCHESTRATOR,
-    hub:          INSERTION_ROLE_BONUS_HUB,
-    internal:     INSERTION_ROLE_BONUS_INTERNAL,
-    utility:      INSERTION_ROLE_BONUS_UTILITY,
+    hub: INSERTION_ROLE_BONUS_HUB,
+    internal: INSERTION_ROLE_BONUS_INTERNAL,
+    utility: INSERTION_ROLE_BONUS_UTILITY,
   };
   return semantic * INSERTION_SEMANTIC_WEIGHT + structuralBonus[role] * INSERTION_STRUCTURAL_WEIGHT;
 }
@@ -172,9 +182,9 @@ export async function handleSearchCode(
   let calleeMap: Map<string, Neighbour[]> | undefined;
   if (llmCtx?.callGraph) {
     const cg = llmCtx.callGraph;
-    const nodeMap = new Map(cg.nodes.map(n => [n.id, n]));
-    callerMap = new Map(cg.nodes.map(n => [n.id, [] as Neighbour[]]));
-    calleeMap = new Map(cg.nodes.map(n => [n.id, [] as Neighbour[]]));
+    const nodeMap = new Map(cg.nodes.map((n) => [n.id, n]));
+    callerMap = new Map(cg.nodes.map((n) => [n.id, [] as Neighbour[]]));
+    calleeMap = new Map(cg.nodes.map((n) => [n.id, [] as Neighbour[]]));
     for (const e of cg.edges) {
       if (!e.calleeId) continue;
       const caller = nodeMap.get(e.callerId);
@@ -192,7 +202,7 @@ export async function handleSearchCode(
   type SpecPeer = { name: string; filePath: string; domain: string; requirement: string };
   const specPeers: SpecPeer[] = [];
   if (mappingIdx) {
-    const resultFileSet = new Set(results.map(r => r.record.filePath));
+    const resultFileSet = new Set(results.map((r) => r.record.filePath));
     const seedDomains = new Set<string>();
     for (const r of results) {
       for (const spec of specsForFile(mappingIdx, r.record.filePath)) seedDomains.add(spec.domain);
@@ -211,9 +221,13 @@ export async function handleSearchCode(
   return {
     query,
     searchMode,
-    ...(searchMode === 'bm25_fallback' ? { note: 'Embedding server unavailable — results based on keyword matching only. Configure EMBED_BASE_URL + EMBED_MODEL for semantic search.' } : {}),
+    ...(searchMode === 'bm25_fallback'
+      ? {
+          note: 'Embedding server unavailable — results based on keyword matching only. Configure EMBED_BASE_URL + EMBED_MODEL for semantic search.',
+        }
+      : {}),
     count: results.length,
-    results: results.map(r => ({
+    results: results.map((r) => ({
       score: r.score,
       name: r.record.name,
       filePath: r.record.filePath,
@@ -263,11 +277,17 @@ export async function handleSuggestInsertionPoints(
   } catch {
     const cfg = await readSpecGenConfig(absDir);
     if (!cfg) {
-      return { error: 'No embedding configuration found. Set EMBED_BASE_URL and EMBED_MODEL env vars, or add an "embedding" section to .spec-gen/config.json.' };
+      return {
+        error:
+          'No embedding configuration found. Set EMBED_BASE_URL and EMBED_MODEL env vars, or add an "embedding" section to .spec-gen/config.json.',
+      };
     }
     const svcFromConfig = EmbeddingService.fromConfig(cfg);
     if (!svcFromConfig) {
-      return { error: 'No embedding configuration found. Set EMBED_BASE_URL and EMBED_MODEL env vars, or add an "embedding" section to .spec-gen/config.json.' };
+      return {
+        error:
+          'No embedding configuration found. Set EMBED_BASE_URL and EMBED_MODEL env vars, or add an "embedding" section to .spec-gen/config.json.',
+      };
     }
     embedSvc = svcFromConfig;
   }
@@ -280,13 +300,18 @@ export async function handleSuggestInsertionPoints(
   ]);
 
   // Normalise search scores to [0, 1] for compositeScore (scores are RRF/BM25: higher = better)
-  const maxScore = rawResults.length > 0 ? Math.max(...rawResults.map(r => r.score)) : 1;
-  const normalise = (s: number) => maxScore > 0 ? s / maxScore : 0;
+  const maxScore = rawResults.length > 0 ? Math.max(...rawResults.map((r) => r.score)) : 1;
+  const normalise = (s: number) => (maxScore > 0 ? s / maxScore : 0);
 
-  const candidates: InsertionCandidate[] = rawResults.map(r => {
-    const role     = classifyRole(r.record.fanIn, r.record.fanOut, r.record.isHub, r.record.isEntryPoint);
+  const candidates: InsertionCandidate[] = rawResults.map((r) => {
+    const role = classifyRole(
+      r.record.fanIn,
+      r.record.fanOut,
+      r.record.isHub,
+      r.record.isEntryPoint
+    );
     const strategy = deriveStrategy(role);
-    const score    = compositeScore(normalise(r.score), role);
+    const score = compositeScore(normalise(r.score), role);
     return {
       rank: 0,
       score,
@@ -297,10 +322,13 @@ export async function handleSuggestInsertionPoints(
       language: r.record.language,
       signature: r.record.signature || undefined,
       docstring: r.record.docstring || undefined,
-      role, insertionStrategy: strategy,
+      role,
+      insertionStrategy: strategy,
       reason: buildReason(r.record.name, role, strategy, r.record.fanIn, r.record.fanOut),
-      fanIn: r.record.fanIn, fanOut: r.record.fanOut,
-      isHub: r.record.isHub, isEntryPoint: r.record.isEntryPoint,
+      fanIn: r.record.fanIn,
+      fanOut: r.record.fanOut,
+      isHub: r.record.isHub,
+      isEntryPoint: r.record.isEntryPoint,
     };
   });
 
@@ -309,7 +337,7 @@ export async function handleSuggestInsertionPoints(
   // they coordinate the domain logic and control the execution flow.
   if (llmCtx?.callGraph) {
     const cg = llmCtx.callGraph;
-    const nodeById = new Map(cg.nodes.map(n => [n.id, n]));
+    const nodeById = new Map(cg.nodes.map((n) => [n.id, n]));
     // Build callerOf: nodeId → caller node ids
     const callerOf = new Map<string, string[]>();
     for (const e of cg.edges) {
@@ -319,8 +347,8 @@ export async function handleSuggestInsertionPoints(
       callerOf.set(e.calleeId, list);
     }
 
-    const seedIds = new Set(rawResults.map(r => r.record.id));
-    const existingIds = new Set(candidates.map(c => `${c.filePath}::${c.name}`));
+    const seedIds = new Set(rawResults.map((r) => r.record.id));
+    const existingIds = new Set(candidates.map((c) => `${c.filePath}::${c.name}`));
 
     for (const seedResult of rawResults) {
       const callerIds = callerOf.get(seedResult.record.id) ?? [];
@@ -331,10 +359,10 @@ export async function handleSuggestInsertionPoints(
         if (existingIds.has(key) || seedIds.has(callerId)) continue;
         existingIds.add(key);
 
-        const role     = classifyRole(callerNode.fanIn, callerNode.fanOut, false, false);
+        const role = classifyRole(callerNode.fanIn, callerNode.fanOut, false, false);
         const strategy = deriveStrategy(role);
         // Graph-expanded candidates score slightly lower than the semantic seed
-        const score    = compositeScore(seedResult.score + 0.15, role) * 0.85;
+        const score = compositeScore(seedResult.score + 0.15, role) * 0.85;
         candidates.push({
           rank: 0,
           score,
@@ -345,10 +373,13 @@ export async function handleSuggestInsertionPoints(
           language: callerNode.language,
           signature: undefined,
           docstring: undefined,
-          role, insertionStrategy: strategy,
+          role,
+          insertionStrategy: strategy,
           reason: `${callerNode.name} calls ${seedResult.record.name} (semantically close to your feature). Adding logic here propagates to the domain.`,
-          fanIn: callerNode.fanIn, fanOut: callerNode.fanOut,
-          isHub: false, isEntryPoint: false,
+          fanIn: callerNode.fanIn,
+          fanOut: callerNode.fanOut,
+          isHub: false,
+          isEntryPoint: false,
         });
       }
     }
@@ -361,23 +392,23 @@ export async function handleSuggestInsertionPoints(
     description,
     count: top.length,
     candidates: top,
-    nextSteps: top.length > 0
-      ? [
-          `Run get_function_skeleton on "${top[0].filePath}" to see the internal structure of ${top[0].name}`,
-          `Run get_subgraph on "${top[0].name}" to understand its call neighborhood`,
-          `After implementing, run check_spec_drift to verify the code matches the spec`,
-        ]
-      : ['No candidates found. Try a broader description or run "spec-gen analyze --embed" to build the index.'],
+    nextSteps:
+      top.length > 0
+        ? [
+            `Run get_function_skeleton on "${top[0].filePath}" to see the internal structure of ${top[0].name}`,
+            `Run get_subgraph on "${top[0].name}" to understand its call neighborhood`,
+            `After implementing, run check_spec_drift to verify the code matches the spec`,
+          ]
+        : [
+            'No candidates found. Try a broader description or run "spec-gen analyze --embed" to build the index.',
+          ],
   };
 }
 
 /**
  * Return the full content of a spec domain's spec.md plus its mapping entries.
  */
-export async function handleGetSpec(
-  directory: string,
-  domain: string,
-): Promise<unknown> {
+export async function handleGetSpec(directory: string, domain: string): Promise<unknown> {
   const { existsSync } = await import('node:fs');
   const { readFile } = await import('node:fs/promises');
   const { join: pjoin } = await import('node:path');
@@ -385,7 +416,9 @@ export async function handleGetSpec(
 
   const specFile = pjoin(absDir, 'openspec', 'specs', domain, 'spec.md');
   if (!existsSync(specFile)) {
-    return { error: `No spec found for domain "${domain}". Run list_spec_domains to see available domains.` };
+    return {
+      error: `No spec found for domain "${domain}". Run list_spec_domains to see available domains.`,
+    };
   }
 
   const [content, mappingIdx] = await Promise.all([
@@ -413,7 +446,10 @@ export async function handleListSpecDomains(directory: string): Promise<unknown>
 
   const specsDir = pjoin(absDir, OPENSPEC_DIR, OPENSPEC_SPECS_SUBDIR);
   if (!(await fileExists(specsDir))) {
-    return { domains: [], note: 'No openspec/specs/ directory found. Run "spec-gen generate" first.' };
+    return {
+      domains: [],
+      note: 'No openspec/specs/ directory found. Run "spec-gen generate" first.',
+    };
   }
 
   let entries: string[];
@@ -423,7 +459,9 @@ export async function handleListSpecDomains(directory: string): Promise<unknown>
     return { domains: [] };
   }
 
-  const domainChecks = await Promise.all(entries.map(e => fileExists(pjoin(specsDir, e, 'spec.md'))));
+  const domainChecks = await Promise.all(
+    entries.map((e) => fileExists(pjoin(specsDir, e, 'spec.md')))
+  );
   const domains = entries.filter((_, i) => domainChecks[i]);
   return { domains, count: domains.length };
 }
@@ -459,11 +497,17 @@ export async function handleSearchSpecs(
   } catch {
     const cfg = await readSpecGenConfig(absDir);
     if (!cfg) {
-      return { error: 'No embedding configuration found. Set EMBED_BASE_URL and EMBED_MODEL env vars, or add an "embedding" section to .spec-gen/config.json.' };
+      return {
+        error:
+          'No embedding configuration found. Set EMBED_BASE_URL and EMBED_MODEL env vars, or add an "embedding" section to .spec-gen/config.json.',
+      };
     }
     const svcFromConfig = EmbeddingService.fromConfig(cfg);
     if (!svcFromConfig) {
-      return { error: 'No embedding configuration found. Set EMBED_BASE_URL and EMBED_MODEL env vars, or add an "embedding" section to .spec-gen/config.json.' };
+      return {
+        error:
+          'No embedding configuration found. Set EMBED_BASE_URL and EMBED_MODEL env vars, or add an "embedding" section to .spec-gen/config.json.',
+      };
     }
     embedSvc = svcFromConfig;
   }
@@ -477,7 +521,7 @@ export async function handleSearchSpecs(
   return {
     query,
     count: results.length,
-    results: results.map(r => ({
+    results: results.map((r) => ({
       score: r.score,
       id: r.record.id,
       domain: r.record.domain,
@@ -489,3 +533,57 @@ export async function handleSearchSpecs(
     })),
   };
 }
+
+/**
+ * Unified search that combines code and spec indexes with cross-scoring
+ */
+export async function handleUnifiedSearch(
+  directory: string,
+  query: string,
+  limit = 10,
+  language?: string,
+  domain?: string,
+  section?: string
+): Promise<unknown> {
+  const absDir = await validateDirectory(directory);
+  const outputDir = join(absDir, SPEC_GEN_DIR, SPEC_GEN_ANALYSIS_SUBDIR);
+
+  const { UnifiedSearch, unifiedSearchAvailable } =
+    await import('../../analyzer/unified-search.js');
+  const { EmbeddingService } = await import('../../analyzer/embedding-service.js');
+
+  if (!(await unifiedSearchAvailable(outputDir))) {
+    return {
+      error:
+        'No unified search available. Run "spec-gen analyze --embed" first, ' +
+        'then configure EMBED_BASE_URL and EMBED_MODEL.',
+    };
+  }
+
+  // Resolve embedding service
+  let embedSvc: InstanceType<typeof EmbeddingService> | null = null;
+  try {
+    embedSvc = EmbeddingService.fromEnv();
+  } catch {
+    const cfg = await readSpecGenConfig(absDir);
+    const svcFromConfig = cfg ? EmbeddingService.fromConfig(cfg) : null;
+    if (svcFromConfig) {
+      embedSvc = svcFromConfig;
+    }
+  }
+
+  limit = Math.max(1, Math.min(limit, 50));
+  const results = await UnifiedSearch.unifiedSearch(outputDir, query, embedSvc, {
+    limit,
+    language,
+    domain,
+    section,
+  });
+
+  return {
+    query,
+    count: results.length,
+    results,
+  };
+}
+
