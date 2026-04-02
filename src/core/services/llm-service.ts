@@ -20,6 +20,7 @@ import {
   DEFAULT_OPENAI_COMPAT_MODEL,
   DEFAULT_COPILOT_MODEL,
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_BEDROCK_MODEL,
   DEFAULT_LLM_MAX_RETRIES,
   DEFAULT_LLM_INITIAL_DELAY_MS,
   DEFAULT_LLM_MAX_DELAY_MS,
@@ -255,7 +256,7 @@ export interface LLMProvider {
   maxOutputTokens: number;
 }
 
-export type ProviderName = 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'gemini-cli' | 'claude-code' | 'mistral-vibe';
+export type ProviderName = 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'gemini-cli' | 'claude-code' | 'mistral-vibe' | 'bedrock';
 
 /**
  * Token usage tracking
@@ -290,6 +291,8 @@ export interface LLMServiceOptions {
   sslVerify?: boolean;
   /** Base URL for openai-compat provider (overrides OPENAI_COMPAT_BASE_URL env var) */
   openaiCompatBaseUrl?: string;
+  /** AWS region for the Bedrock provider (e.g. 'us-east-1') */
+  bedrockRegion?: string;
   /** Maximum retry attempts */
   maxRetries?: number;
   /** Initial retry delay in ms */
@@ -1089,6 +1092,104 @@ export class GeminiProvider implements LLMProvider {
 }
 
 // ============================================================================
+// BEDROCK PROVIDER (AWS Bedrock Converse API with bearer token auth)
+// ============================================================================
+
+/**
+ * AWS Bedrock provider using the Converse API.
+ *
+ * Authenticates via a bearer token (AWS_BEARER_TOKEN_BEDROCK env var).
+ * Uses the model-agnostic Converse API so any Bedrock-supported model
+ * family (Anthropic, Meta, Mistral, etc.) can be used.
+ */
+export class BedrockProvider implements LLMProvider {
+  name = 'bedrock';
+  maxContextTokens = 200_000;
+  maxOutputTokens = 4_096;
+
+  private token: string;
+  private model: string;
+  private region: string;
+
+  constructor(token: string, model: string, region: string) {
+    this.token = token;
+    this.model = model;
+    this.region = region;
+  }
+
+  countTokens(text: string): number {
+    return estimateTokens(text);
+  }
+
+  async generateCompletion(request: CompletionRequest): Promise<CompletionResponse> {
+    const url = `https://bedrock-runtime.${this.region}.amazonaws.com/model/${encodeURIComponent(this.model)}/converse`;
+
+    const body: Record<string, unknown> = {
+      messages: [
+        {
+          role: 'user',
+          content: [{ text: request.userPrompt }],
+        },
+      ],
+      inferenceConfig: {
+        maxTokens: request.maxTokens ?? this.maxOutputTokens,
+        temperature: request.temperature ?? 0.3,
+        ...(request.stopSequences?.length ? { stopSequences: request.stopSequences } : {}),
+      },
+    };
+
+    if (request.systemPrompt) {
+      body.system = [{ text: request.systemPrompt }];
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.token}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw this.parseError(error, response.status, response.headers.get('retry-after'));
+    }
+
+    const data = await response.json() as {
+      output: { message: { role: string; content: Array<{ text: string }> } };
+      usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+      stopReason: string;
+    };
+
+    const content = data.output.message.content
+      .map(c => c.text)
+      .join('');
+
+    return {
+      content,
+      usage: {
+        inputTokens: data.usage.inputTokens,
+        outputTokens: data.usage.outputTokens,
+        totalTokens: data.usage.totalTokens,
+      },
+      model: this.model,
+      finishReason: data.stopReason === 'end_turn' ? 'stop' : data.stopReason === 'max_tokens' ? 'length' : 'error',
+    };
+  }
+
+  private parseError(error: string, status: number, retryAfterHeader?: string | null): Error & { status?: number; retryable?: boolean; retryAfterMs?: number } {
+    const err = new Error(error) as Error & { status?: number; retryable?: boolean; retryAfterMs?: number };
+    err.status = status;
+    err.retryable = status === 429 || status >= 500;
+    if (status === 429) {
+      err.retryAfterMs = parseRetryAfterMs(error, retryAfterHeader);
+    }
+    return err;
+  }
+}
+
+// ============================================================================
 // MOCK PROVIDER (for testing)
 // ============================================================================
 
@@ -1186,6 +1287,7 @@ export class LLMService {
       apiBase: options.apiBase ?? '',
       sslVerify: options.sslVerify ?? true,
       openaiCompatBaseUrl: options.openaiCompatBaseUrl ?? '',
+      bedrockRegion: options.bedrockRegion ?? '',
       maxRetries: options.maxRetries ?? DEFAULT_LLM_MAX_RETRIES,
       initialDelay: options.initialDelay ?? DEFAULT_LLM_INITIAL_DELAY_MS,
       maxDelay: options.maxDelay ?? DEFAULT_LLM_MAX_DELAY_MS,
@@ -1584,8 +1686,18 @@ export function createLLMService(options: LLMServiceOptions = {}): LLMService {
     provider = new MistralVibeProvider(options.model);
   } else if (providerName === 'gemini-cli') {
     provider = new GeminiCLIProvider(options.model);
+  } else if (providerName === 'bedrock') {
+    const token = process.env.AWS_BEARER_TOKEN_BEDROCK;
+    if (!token) {
+      throw new Error('AWS_BEARER_TOKEN_BEDROCK environment variable is not set');
+    }
+    const region = options.bedrockRegion ?? process.env.AWS_DEFAULT_REGION;
+    if (!region) {
+      throw new Error('Bedrock region is not configured. Set bedrockRegion in config, pass --bedrock-region, or set AWS_DEFAULT_REGION.');
+    }
+    provider = new BedrockProvider(token, options.model ?? DEFAULT_BEDROCK_MODEL, region);
   } else {
-    throw new Error(`Unknown provider: ${providerName}. Supported: anthropic, openai, openai-compat, copilot, gemini, gemini-cli, claude-code, mistral-vibe`);
+    throw new Error(`Unknown provider: ${providerName}. Supported: anthropic, openai, openai-compat, copilot, gemini, gemini-cli, claude-code, mistral-vibe, bedrock`);
   }
 
   if (!sslVerify) {

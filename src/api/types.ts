@@ -107,7 +107,7 @@ export interface AnalyzeResult {
 
 export interface GenerateApiOptions extends BaseOptions {
   /** LLM provider to use */
-  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini';
+  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'bedrock';
   /** LLM model name */
   model?: string;
   /** Custom LLM API base URL */
@@ -116,6 +116,8 @@ export interface GenerateApiOptions extends BaseOptions {
   sslVerify?: boolean;
   /** OpenAI-compatible base URL (for Mistral, Groq, Ollama, etc.) */
   openaiCompatBaseUrl?: string;
+  /** AWS region for the Bedrock provider (e.g. 'us-east-1') */
+  bedrockRegion?: string;
   /** Only generate specific domains */
   domains?: string[];
   /** Write mode for existing specs */
@@ -144,13 +146,15 @@ export interface GenerateResult {
 
 export interface VerifyApiOptions extends BaseOptions {
   /** LLM provider to use */
-  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini';
+  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'bedrock';
   /** LLM model name */
   model?: string;
   /** Custom LLM API base URL */
   apiBase?: string;
   /** Base URL for OpenAI-compatible endpoint (Ollama, Mistral, etc.) */
   openaiCompatBaseUrl?: string;
+  /** AWS region for the Bedrock provider (e.g. 'us-east-1') */
+  bedrockRegion?: string;
   /** Enable/disable SSL certificate verification. Default: true */
   sslVerify?: boolean;
   /** Number of files to sample for verification. Default: 5 */
@@ -180,13 +184,15 @@ export interface DriftApiOptions extends BaseOptions {
   /** Use LLM for deeper semantic comparison */
   llmEnhanced?: boolean;
   /** LLM provider (required if llmEnhanced is true) */
-  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini';
+  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'bedrock';
   /** LLM model name (used when llmEnhanced is true) */
   model?: string;
   /** Custom LLM API base URL */
   apiBase?: string;
   /** Base URL for OpenAI-compatible endpoint (Ollama, Mistral, etc.) */
   openaiCompatBaseUrl?: string;
+  /** AWS region for the Bedrock provider (e.g. 'us-east-1') */
+  bedrockRegion?: string;
   /** Enable/disable SSL certificate verification. Default: true */
   sslVerify?: boolean;
   /** Exit threshold severity. Default: 'warning' */
@@ -207,7 +213,7 @@ export interface RunApiOptions extends BaseOptions {
   /** Force fresh analysis even if recent exists */
   reanalyze?: boolean;
   /** LLM provider to use */
-  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini';
+  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'bedrock';
   /** LLM model name */
   model?: string;
   /** Custom LLM API base URL */
@@ -216,6 +222,8 @@ export interface RunApiOptions extends BaseOptions {
   sslVerify?: boolean;
   /** OpenAI-compatible base URL */
   openaiCompatBaseUrl?: string;
+  /** AWS region for the Bedrock provider (e.g. 'us-east-1') */
+  bedrockRegion?: string;
   /** Maximum files to analyze. Default: 500 */
   maxFiles?: number;
   /** Generate Architecture Decision Records */

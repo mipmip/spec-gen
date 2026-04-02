@@ -309,13 +309,14 @@ spec-gen drift --no-color                # Plain output for CI logs
 
 ## LLM Providers
 
-spec-gen supports eight providers. The default is Anthropic Claude.
+spec-gen supports nine providers. The default is Anthropic Claude.
 
 | Provider | `provider` value | API key env var | Default model |
 |----------|-----------------|-----------------|---------------|
 | Anthropic Claude | `anthropic` *(default)* | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o` |
 | OpenAI-compatible *(Mistral, Groq, Ollama...)* | `openai-compat` | `OPENAI_COMPAT_API_KEY` | `mistral-large-latest` |
+| AWS Bedrock | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | `anthropic.claude-opus-4-20250514-v1:0` |
 | GitHub Copilot *(via copilot-api proxy)* | `copilot` | *(none)* | `gpt-4o` |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
 | Gemini CLI | `gemini-cli` | *(none)* | *(CLI default)* |
@@ -414,6 +415,47 @@ export COPILOT_API_KEY=copilot                         # default, only needed if
 ```
 
 No API key is required — the copilot-api proxy handles authentication via your GitHub Copilot session.
+
+### AWS Bedrock
+
+Use `provider: "bedrock"` to access any model available on AWS Bedrock (Anthropic Claude, Meta Llama, Mistral, etc.) via the Converse API. Authentication uses a bearer token — no AWS SDK required.
+
+**Environment variable:**
+```bash
+export AWS_BEARER_TOKEN_BEDROCK=<your-bearer-token>
+```
+
+**Config file** (per-project):
+```json
+{
+  "generation": {
+    "provider": "bedrock",
+    "model": "anthropic.claude-opus-4-20250514-v1:0",
+    "bedrockRegion": "us-east-1",
+    "domains": "auto"
+  }
+}
+```
+
+**Region resolution** (highest priority first):
+1. `--bedrock-region` CLI flag
+2. `bedrockRegion` in `config.json`
+3. `AWS_DEFAULT_REGION` environment variable
+
+**CLI override:**
+```bash
+spec-gen generate --bedrock-region us-west-2 --model meta.llama3-70b-instruct-v1:0
+```
+
+**Common Bedrock model IDs:**
+| Model | ID |
+|-------|----|
+| Claude Opus 4.5 | `anthropic.claude-opus-4-20250514-v1:0` |
+| Claude Sonnet 4 | `anthropic.claude-sonnet-4-20250514-v1:0` |
+| Llama 3 70B | `meta.llama3-70b-instruct-v1:0` |
+| Mistral Large | `mistral.mistral-large-2402-v1:0` |
+
+Note: Bearer tokens expire. Refresh them via `aws sso login`, a token vending service, or your organization's credential workflow.
 
 ### CLI-based providers (no API key)
 

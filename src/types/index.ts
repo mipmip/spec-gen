@@ -38,9 +38,11 @@ export interface AnalysisConfig {
 }
 
 export interface GenerationConfig {
-  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'claude-code' | 'mistral-vibe';
+  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'claude-code' | 'mistral-vibe' | 'bedrock';
   model?: string;
   openaiCompatBaseUrl?: string;
+  /** AWS region for the Bedrock provider (e.g. 'us-east-1') */
+  bedrockRegion?: string;
   skipSslVerify?: boolean;
   domains: string | string[];
 }

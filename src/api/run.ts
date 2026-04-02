@@ -8,7 +8,7 @@
 
 import { join } from 'node:path';
 import { readFile, stat, mkdir, writeFile } from 'node:fs/promises';
-import { ANALYSIS_REUSE_THRESHOLD_MS, DEFAULT_MAX_FILES, DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_COMPAT_MODEL, DEFAULT_COPILOT_MODEL, SPEC_GEN_DIR, SPEC_GEN_ANALYSIS_SUBDIR, SPEC_GEN_LOGS_SUBDIR, SPEC_GEN_CONFIG_REL_PATH, SPEC_GEN_GENERATION_SUBDIR, SPEC_GEN_RUNS_SUBDIR, DEFAULT_OPENSPEC_PATH, ARTIFACT_REPO_STRUCTURE, ARTIFACT_DEPENDENCY_GRAPH, ARTIFACT_LLM_CONTEXT } from '../constants.js';
+import { ANALYSIS_REUSE_THRESHOLD_MS, DEFAULT_MAX_FILES, DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_COMPAT_MODEL, DEFAULT_COPILOT_MODEL, DEFAULT_BEDROCK_MODEL, SPEC_GEN_DIR, SPEC_GEN_ANALYSIS_SUBDIR, SPEC_GEN_LOGS_SUBDIR, SPEC_GEN_CONFIG_REL_PATH, SPEC_GEN_GENERATION_SUBDIR, SPEC_GEN_RUNS_SUBDIR, DEFAULT_OPENSPEC_PATH, ARTIFACT_REPO_STRUCTURE, ARTIFACT_DEPENDENCY_GRAPH, ARTIFACT_LLM_CONTEXT } from '../constants.js';
 import { fileExists, readJsonFile } from '../utils/command-helpers.js';
 import {
   detectProjectType,
@@ -245,15 +245,17 @@ export async function specGenRun(options: RunApiOptions = {}): Promise<RunResult
   const openaiKey = process.env.OPENAI_API_KEY;
   const openaiCompatKey = process.env.OPENAI_COMPAT_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
+  const bedrockToken = process.env.AWS_BEARER_TOKEN_BEDROCK;
   const noKeyProviders = ['claude-code', 'mistral-vibe', 'copilot'];
-  if (!noKeyProviders.includes(options.provider ?? '') && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
-    throw new Error('No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OPENAI_COMPAT_API_KEY, or use provider "copilot".');
+  if (!noKeyProviders.includes(options.provider ?? '') && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey && !bedrockToken) {
+    throw new Error('No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OPENAI_COMPAT_API_KEY, AWS_BEARER_TOKEN_BEDROCK, or use provider "copilot".');
   }
 
   // Create LLM service
   const envDetectedProvider = anthropicKey ? 'anthropic'
     : geminiKey ? 'gemini'
     : openaiCompatKey ? 'openai-compat'
+    : bedrockToken ? 'bedrock'
     : 'openai';
   const provider = options.provider ?? envDetectedProvider;
   const defaultModels: Record<string, string> = {
@@ -261,6 +263,7 @@ export async function specGenRun(options: RunApiOptions = {}): Promise<RunResult
     gemini: DEFAULT_GEMINI_MODEL,
     'openai-compat': DEFAULT_OPENAI_COMPAT_MODEL,
     copilot: DEFAULT_COPILOT_MODEL,
+    bedrock: DEFAULT_BEDROCK_MODEL,
     openai: DEFAULT_OPENAI_MODEL,
   };
   const model = options.model ?? defaultModels[provider] ?? DEFAULT_ANTHROPIC_MODEL;
@@ -270,6 +273,7 @@ export async function specGenRun(options: RunApiOptions = {}): Promise<RunResult
       provider,
       model,
       apiBase: options.apiBase ?? specGenConfig.llm?.apiBase,
+      bedrockRegion: options.bedrockRegion ?? specGenConfig.generation.bedrockRegion,
       sslVerify: options.sslVerify ?? specGenConfig.llm?.sslVerify ?? true,
       openaiCompatBaseUrl: options.openaiCompatBaseUrl,
       enableLogging: true,

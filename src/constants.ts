@@ -158,6 +158,7 @@ export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
 export const DEFAULT_OPENAI_COMPAT_MODEL = 'mistral-large-latest';
 export const DEFAULT_GEMINI_MODEL = 'gemini-2.0-flash';
 export const DEFAULT_COPILOT_MODEL = 'gpt-4o';
+export const DEFAULT_BEDROCK_MODEL = 'anthropic.claude-opus-4-20250514-v1:0';
 /** Lighter model used for interactive chat (lower cost, faster) */
 export const DEFAULT_CHAT_OPENAI_MODEL = 'gpt-4o-mini';
 
