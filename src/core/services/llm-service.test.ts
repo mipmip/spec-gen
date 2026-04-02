@@ -17,6 +17,7 @@ import {
   ClaudeCodeProvider,
   GeminiCLIProvider,
   MistralVibeProvider,
+  BedrockProvider,
   createMockLLMService,
   createLLMService,
   estimateTokens,
@@ -1186,5 +1187,163 @@ describe('LLMService.completeJSON — array unwrapping', () => {
     provider.setDefaultResponse('{"ok":true}');
     await service.completeJSON({ systemPrompt: 'You are helpful', userPrompt: 'go' });
     expect(provider.callHistory[0].systemPrompt).toContain('valid JSON');
+  });
+});
+
+// ============================================================================
+// BedrockProvider — Converse API
+// ============================================================================
+
+describe('BedrockProvider', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const SUCCESS_BODY = {
+    output: { message: { role: 'assistant', content: [{ text: 'Bedrock response' }] } },
+    usage: { inputTokens: 15, outputTokens: 8, totalTokens: 23 },
+    stopReason: 'end_turn',
+  };
+
+  it('returns content and token usage on success', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY)));
+    const provider = new BedrockProvider('token123', 'anthropic.claude-opus-4-20250514-v1:0', 'us-east-1');
+    const result = await provider.generateCompletion({ systemPrompt: 'sys', userPrompt: 'hello' });
+    expect(result.content).toBe('Bedrock response');
+    expect(result.usage.inputTokens).toBe(15);
+    expect(result.usage.outputTokens).toBe(8);
+    expect(result.usage.totalTokens).toBe(23);
+    expect(result.finishReason).toBe('stop');
+    expect(result.model).toBe('anthropic.claude-opus-4-20250514-v1:0');
+  });
+
+  it('sends correct Converse API request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new BedrockProvider('mytoken', 'meta.llama3-8b-v1:0', 'eu-west-1');
+    await provider.generateCompletion({
+      systemPrompt: 'Be helpful',
+      userPrompt: 'What is 2+2?',
+      temperature: 0.5,
+      maxTokens: 100,
+      stopSequences: ['END'],
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://bedrock-runtime.eu-west-1.amazonaws.com/model/meta.llama3-8b-v1%3A0/converse',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'Authorization': 'Bearer mytoken',
+          'Content-Type': 'application/json',
+        }),
+      }),
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.messages).toEqual([{ role: 'user', content: [{ text: 'What is 2+2?' }] }]);
+    expect(body.system).toEqual([{ text: 'Be helpful' }]);
+    expect(body.inferenceConfig.temperature).toBe(0.5);
+    expect(body.inferenceConfig.maxTokens).toBe(100);
+    expect(body.inferenceConfig.stopSequences).toEqual(['END']);
+  });
+
+  it('omits system field when systemPrompt is empty', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new BedrockProvider('token', 'anthropic.claude-opus-4-20250514-v1:0', 'us-east-1');
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.system).toBeUndefined();
+  });
+
+  it('maps max_tokens stop reason to "length"', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ ...SUCCESS_BODY, stopReason: 'max_tokens' })));
+    const provider = new BedrockProvider('token', 'anthropic.claude-opus-4-20250514-v1:0', 'us-east-1');
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.finishReason).toBe('length');
+  });
+
+  it('throws retryable error on 429', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockErrorResponse('throttled', 429, { 'retry-after': '3' })));
+    const provider = new BedrockProvider('token', 'anthropic.claude-opus-4-20250514-v1:0', 'us-east-1');
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(true);
+    expect((err as { retryAfterMs?: number }).retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it('throws retryable error on 500', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockErrorResponse('server error', 500)));
+    const provider = new BedrockProvider('token', 'anthropic.claude-opus-4-20250514-v1:0', 'us-east-1');
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(true);
+  });
+
+  it('throws non-retryable error on 400', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockErrorResponse('bad request', 400)));
+    const provider = new BedrockProvider('token', 'anthropic.claude-opus-4-20250514-v1:0', 'us-east-1');
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(false);
+  });
+
+  it('encodes model ID in URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new BedrockProvider('token', 'anthropic.claude-opus-4-20250514-v1:0', 'us-east-1');
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(fetchMock.mock.calls[0][0]).toContain('anthropic.claude-opus-4-20250514-v1%3A0');
+  });
+});
+
+// ============================================================================
+// BedrockProvider — region resolution
+// ============================================================================
+
+describe('createLLMService bedrock provider', () => {
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    savedEnv.AWS_BEARER_TOKEN_BEDROCK = process.env.AWS_BEARER_TOKEN_BEDROCK;
+    savedEnv.AWS_DEFAULT_REGION = process.env.AWS_DEFAULT_REGION;
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('creates BedrockProvider with token + explicit region', () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = 'test-token';
+    const service = createLLMService({ provider: 'bedrock', bedrockRegion: 'us-west-2' });
+    expect(service).toBeDefined();
+  });
+
+  it('falls back to AWS_DEFAULT_REGION when bedrockRegion is not set', () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = 'test-token';
+    process.env.AWS_DEFAULT_REGION = 'ap-southeast-1';
+    const service = createLLMService({ provider: 'bedrock' });
+    expect(service).toBeDefined();
+  });
+
+  it('throws when AWS_BEARER_TOKEN_BEDROCK is missing', () => {
+    delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+    expect(() => createLLMService({ provider: 'bedrock', bedrockRegion: 'us-east-1' }))
+      .toThrow('AWS_BEARER_TOKEN_BEDROCK');
+  });
+
+  it('throws when no region is configured', () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = 'test-token';
+    delete process.env.AWS_DEFAULT_REGION;
+    expect(() => createLLMService({ provider: 'bedrock' }))
+      .toThrow('region');
+  });
+
+  it('bedrockRegion option takes precedence over AWS_DEFAULT_REGION', () => {
+    process.env.AWS_BEARER_TOKEN_BEDROCK = 'test-token';
+    process.env.AWS_DEFAULT_REGION = 'eu-west-1';
+    // Should not throw — uses bedrockRegion option
+    const service = createLLMService({ provider: 'bedrock', bedrockRegion: 'us-east-1' });
+    expect(service).toBeDefined();
   });
 });

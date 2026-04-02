@@ -23,6 +23,7 @@
             src = ./.;
 
             npmDepsHash = "sha256-cjPSzdyG3LrSKPwObVXU0YBAFjibi2kx45lItd0zv2w=";
+            npmDepsFetcherVersion = 2;
 
             # Build TypeScript
             buildPhase = ''

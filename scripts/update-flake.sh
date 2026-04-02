@@ -28,11 +28,16 @@ npm install --package-lock-only --ignore-scripts --silent 2>/dev/null
 # --- Compute npmDepsHash ---
 echo "Computing npmDepsHash (this may take a moment)..."
 if command -v prefetch-npm-deps &>/dev/null; then
-  new_hash=$(prefetch-npm-deps "$LOCK" 2>/dev/null)
+  new_hash=$(prefetch-npm-deps "$LOCK" 2>/dev/null | tail -1)
 elif command -v nix-shell &>/dev/null; then
-  new_hash=$(nix-shell -p prefetch-npm-deps --run "prefetch-npm-deps $LOCK" 2>/dev/null)
+  new_hash=$(nix-shell -p prefetch-npm-deps --run "prefetch-npm-deps $LOCK" 2>/dev/null | tail -1)
 else
   echo "Error: prefetch-npm-deps not found and nix-shell not available"
+  exit 1
+fi
+
+if [[ -z "$new_hash" || ! "$new_hash" =~ ^sha256- ]]; then
+  echo "Error: failed to compute npmDepsHash (got: '$new_hash')"
   exit 1
 fi
 
@@ -41,10 +46,7 @@ old_hash=$(sed -n 's/.*npmDepsHash = "\([^"]*\)".*/\1/p' "$FLAKE")
 if [[ "$old_hash" == "$new_hash" ]]; then
   echo "npmDepsHash unchanged: $new_hash"
 else
-  # Escape slashes in hash for sed
-  escaped_old=$(printf '%s\n' "$old_hash" | sed 's/[/&]/\\&/g')
-  escaped_new=$(printf '%s\n' "$new_hash" | sed 's/[/&]/\\&/g')
-  sed -i "s|npmDepsHash = \"$escaped_old\"|npmDepsHash = \"$escaped_new\"|" "$FLAKE"
+  sed -i "s|npmDepsHash = \"$old_hash\"|npmDepsHash = \"$new_hash\"|" "$FLAKE"
   echo "npmDepsHash: $old_hash → $new_hash"
 fi
 

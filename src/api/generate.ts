@@ -30,6 +30,7 @@ import {
   DEFAULT_OPENAI_COMPAT_MODEL,
   DEFAULT_COPILOT_MODEL,
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_BEDROCK_MODEL,
   SPEC_GEN_DIR,
   SPEC_GEN_ANALYSIS_SUBDIR,
   SPEC_GEN_LOGS_SUBDIR,
@@ -126,19 +127,21 @@ export async function specGenGenerate(options: GenerateApiOptions = {}): Promise
   const openaiKey = process.env.OPENAI_API_KEY;
   const openaiCompatKey = process.env.OPENAI_COMPAT_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
+  const bedrockToken = process.env.AWS_BEARER_TOKEN_BEDROCK;
 
   const configuredProvider = options.provider ?? specGenConfig.generation.provider;
   const noKeyProviders = ['claude-code', 'mistral-vibe', 'copilot'];
 
-  if (!noKeyProviders.includes(configuredProvider ?? '') && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
+  if (!noKeyProviders.includes(configuredProvider ?? '') && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey && !bedrockToken) {
     throw new Error(
-      'No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OPENAI_COMPAT_API_KEY, or use provider "copilot".'
+      'No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OPENAI_COMPAT_API_KEY, AWS_BEARER_TOKEN_BEDROCK, or use provider "copilot".'
     );
   }
 
   const envDetectedProvider = anthropicKey ? 'anthropic'
     : geminiKey ? 'gemini'
     : openaiCompatKey ? 'openai-compat'
+    : bedrockToken ? 'bedrock'
     : 'openai';
 
   const effectiveProvider = configuredProvider ?? envDetectedProvider;
@@ -148,6 +151,7 @@ export async function specGenGenerate(options: GenerateApiOptions = {}): Promise
     gemini: DEFAULT_GEMINI_MODEL,
     'openai-compat': DEFAULT_OPENAI_COMPAT_MODEL,
     copilot: DEFAULT_COPILOT_MODEL,
+    bedrock: DEFAULT_BEDROCK_MODEL,
     openai: DEFAULT_OPENAI_MODEL,
   };
   const effectiveModel = options.model || specGenConfig.generation.model || defaultModels[effectiveProvider];
@@ -173,6 +177,7 @@ export async function specGenGenerate(options: GenerateApiOptions = {}): Promise
       model: effectiveModel,
       openaiCompatBaseUrl: effectiveBaseUrl,
       apiBase: options.apiBase ?? specGenConfig.llm?.apiBase,
+      bedrockRegion: options.bedrockRegion ?? specGenConfig.generation.bedrockRegion,
       sslVerify,
       enableLogging: true,
       logDir: join(rootPath, SPEC_GEN_DIR, SPEC_GEN_LOGS_SUBDIR),

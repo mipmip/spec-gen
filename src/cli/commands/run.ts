@@ -82,6 +82,7 @@ interface RunOptions {
   yes: boolean;
   maxFiles: number;
   adr: boolean;
+  bedrockRegion?: string;
 }
 
 interface RunMetadata {
@@ -248,6 +249,10 @@ export const runCommand = new Command('run')
     '--model <name>',
     'LLM model to use for generation',
     DEFAULT_ANTHROPIC_MODEL
+  )
+  .option(
+    '--bedrock-region <region>',
+    'AWS region for Bedrock provider (e.g. us-east-1)'
   )
   .option(
     '--dry-run',
@@ -544,13 +549,15 @@ The pipeline saves run metadata to .spec-gen/runs/ for tracking.
       }
 
       // Create LLM service (CLI flags > env vars > config file)
-      const provider = anthropicKey ? 'anthropic' : 'openai';
+      const bedrockToken = process.env.AWS_BEARER_TOKEN_BEDROCK;
+      const provider = anthropicKey ? 'anthropic' : bedrockToken ? 'bedrock' : 'openai';
       let llm: LLMService;
       try {
         llm = createLLMService({
           provider,
           model: opts.model,
           apiBase: globalOpts.apiBase ?? specGenConfig?.llm?.apiBase,
+          bedrockRegion: options.bedrockRegion ?? specGenConfig?.generation.bedrockRegion,
           sslVerify: globalOpts.insecure != null ? !globalOpts.insecure : specGenConfig?.llm?.sslVerify ?? true,
           enableLogging: true,
           logDir: join(rootPath, SPEC_GEN_DIR, SPEC_GEN_LOGS_SUBDIR),

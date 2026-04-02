@@ -6,7 +6,7 @@
  */
 
 import { join } from 'node:path';
-import { SPEC_GEN_DIR, SPEC_GEN_ANALYSIS_SUBDIR, SPEC_GEN_LOGS_SUBDIR, SPEC_GEN_OUTPUTS_SUBDIR, SPEC_GEN_VERIFICATION_SUBDIR, OPENSPEC_DIR, OPENSPEC_SPECS_SUBDIR, ARTIFACT_DEPENDENCY_GRAPH, ARTIFACT_GENERATION_REPORT, DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_COMPAT_MODEL } from '../constants.js';
+import { SPEC_GEN_DIR, SPEC_GEN_ANALYSIS_SUBDIR, SPEC_GEN_LOGS_SUBDIR, SPEC_GEN_OUTPUTS_SUBDIR, SPEC_GEN_VERIFICATION_SUBDIR, OPENSPEC_DIR, OPENSPEC_SPECS_SUBDIR, ARTIFACT_DEPENDENCY_GRAPH, ARTIFACT_GENERATION_REPORT, DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_COMPAT_MODEL, DEFAULT_BEDROCK_MODEL } from '../constants.js';
 import { fileExists, readJsonFile } from '../utils/command-helpers.js';
 import { readSpecGenConfig } from '../core/services/config-manager.js';
 import { createLLMService } from '../core/services/llm-service.js';
@@ -75,19 +75,22 @@ export async function specGenVerify(options: VerifyApiOptions = {}): Promise<Ver
   const openaiKey = process.env.OPENAI_API_KEY;
   const openaiCompatKey = process.env.OPENAI_COMPAT_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
-  if (!anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
-    throw new Error('No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or OPENAI_COMPAT_API_KEY.');
+  const bedrockToken = process.env.AWS_BEARER_TOKEN_BEDROCK;
+  if (!anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey && !bedrockToken) {
+    throw new Error('No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OPENAI_COMPAT_API_KEY, or AWS_BEARER_TOKEN_BEDROCK.');
   }
 
   const envDetectedProvider = anthropicKey ? 'anthropic'
     : geminiKey ? 'gemini'
     : openaiCompatKey ? 'openai-compat'
+    : bedrockToken ? 'bedrock'
     : 'openai';
   const provider = options.provider ?? envDetectedProvider;
   const defaultModels: Record<string, string> = {
     anthropic: DEFAULT_ANTHROPIC_MODEL,
     gemini: DEFAULT_GEMINI_MODEL,
     'openai-compat': DEFAULT_OPENAI_COMPAT_MODEL,
+    bedrock: DEFAULT_BEDROCK_MODEL,
     openai: DEFAULT_OPENAI_MODEL,
   };
   const effectiveModel = options.model ?? defaultModels[provider] ?? DEFAULT_ANTHROPIC_MODEL;
@@ -97,6 +100,7 @@ export async function specGenVerify(options: VerifyApiOptions = {}): Promise<Ver
       provider,
       model: effectiveModel,
       apiBase: options.apiBase ?? specGenConfig.llm?.apiBase,
+      bedrockRegion: options.bedrockRegion ?? specGenConfig.generation.bedrockRegion,
       sslVerify: options.sslVerify ?? specGenConfig.llm?.sslVerify ?? true,
       openaiCompatBaseUrl: options.openaiCompatBaseUrl,
       enableLogging: true,

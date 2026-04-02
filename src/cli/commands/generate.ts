@@ -19,6 +19,7 @@ import {
   DEFAULT_OPENAI_COMPAT_MODEL,
   DEFAULT_COPILOT_MODEL,
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_BEDROCK_MODEL,
   DEFAULT_SURVEY_ESTIMATED_TOKENS,
   COST_CONFIRMATION_THRESHOLD,
   SPEC_GEN_DIR,
@@ -75,6 +76,7 @@ interface ExtendedGenerateOptions extends GenerateOptions {
   noOverwrite?: boolean;
   yes?: boolean;
   outputDir?: string;
+  bedrockRegion?: string;
 }
 
 interface AnalysisData {
@@ -212,6 +214,10 @@ export const generateCommand = new Command('generate')
   .option(
     '--model <name>',
     'LLM model to use for generation (default depends on provider)'
+  )
+  .option(
+    '--bedrock-region <region>',
+    'AWS region for Bedrock provider (e.g. us-east-1)'
   )
   .option(
     '--dry-run',
@@ -389,22 +395,25 @@ Each spec.md follows OpenSpec conventions:
       const openaiKey = process.env.OPENAI_API_KEY;
       const openaiCompatKey = process.env.OPENAI_COMPAT_API_KEY;
       const geminiKey = process.env.GEMINI_API_KEY;
+      const bedrockToken = process.env.AWS_BEARER_TOKEN_BEDROCK;
 
       // Resolve provider early so we can skip the API key check for claude-code
       const envDetectedProvider = anthropicKey ? 'anthropic'
         : geminiKey ? 'gemini'
         : openaiCompatKey ? 'openai-compat'
+        : bedrockToken ? 'bedrock'
         : 'openai';
       const rootConfig = specGenConfig as unknown as Record<string, string>;
-      const effectiveProvider = (specGenConfig.generation.provider ?? rootConfig['provider'] ?? envDetectedProvider) as 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'claude-code' | 'mistral-vibe';
+      const effectiveProvider = (specGenConfig.generation.provider ?? rootConfig['provider'] ?? envDetectedProvider) as 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'claude-code' | 'mistral-vibe' | 'bedrock';
 
-      if (effectiveProvider !== 'claude-code' && effectiveProvider !== 'mistral-vibe' && effectiveProvider !== 'copilot' && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
+      if (effectiveProvider !== 'claude-code' && effectiveProvider !== 'mistral-vibe' && effectiveProvider !== 'copilot' && effectiveProvider !== 'bedrock' && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
         logger.error('No LLM API key found.');
         logger.discovery('Set one of the following environment variables:');
-        logger.discovery('  ANTHROPIC_API_KEY    → https://console.anthropic.com/');
-        logger.discovery('  OPENAI_API_KEY       → https://platform.openai.com/');
-        logger.discovery('  GEMINI_API_KEY       → https://aistudio.google.com/');
-        logger.discovery('  OPENAI_COMPAT_API_KEY + OPENAI_COMPAT_BASE_URL  → Mistral, Groq, Ollama...');
+        logger.discovery('  ANTHROPIC_API_KEY        → https://console.anthropic.com/');
+        logger.discovery('  OPENAI_API_KEY           → https://platform.openai.com/');
+        logger.discovery('  GEMINI_API_KEY           → https://aistudio.google.com/');
+        logger.discovery('  OPENAI_COMPAT_API_KEY    + OPENAI_COMPAT_BASE_URL  → Mistral, Groq, Ollama...');
+        logger.discovery('  AWS_BEARER_TOKEN_BEDROCK → AWS Bedrock');
         logger.discovery('  Or set provider to "claude-code", "mistral-vibe", or "copilot" (no API key needed).');
         process.exitCode = 1;
         return;
@@ -416,6 +425,7 @@ Each spec.md follows OpenSpec conventions:
         gemini: DEFAULT_GEMINI_MODEL,
         'openai-compat': DEFAULT_OPENAI_COMPAT_MODEL,
         copilot: DEFAULT_COPILOT_MODEL,
+        bedrock: DEFAULT_BEDROCK_MODEL,
         openai: DEFAULT_OPENAI_MODEL,
         'claude-code': 'claude-code',
         'mistral-vibe': 'mistral-vibe',
@@ -514,6 +524,7 @@ Each spec.md follows OpenSpec conventions:
           model: effectiveModel,
           openaiCompatBaseUrl: effectiveBaseUrl,
           apiBase: globalOpts.apiBase ?? specGenConfig.llm?.apiBase,
+          bedrockRegion: options.bedrockRegion ?? specGenConfig.generation.bedrockRegion,
           sslVerify: globalOpts.insecure != null ? !globalOpts.insecure : specGenConfig.llm?.sslVerify ?? true,
           enableLogging: true,
           logDir: join(rootPath, SPEC_GEN_DIR, SPEC_GEN_LOGS_SUBDIR),
