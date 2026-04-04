@@ -322,11 +322,13 @@ export class SpecVerificationEngine {
 
     // Select files from each domain
     for (const [domain, nodes] of filesByDomain) {
-      // Prefer leaf nodes (low connectivity)
+      // Prefer high-connectivity (core) files — they're what specs actually describe
+      // and are more likely to have docstrings. Leaf/utility nodes were previously
+      // preferred (ascending sort) but produced systematically low scores.
       const sorted = nodes.sort((a, b) => {
         const aConnectivity = a.metrics.inDegree + a.metrics.outDegree;
         const bConnectivity = b.metrics.inDegree + b.metrics.outDegree;
-        return aConnectivity - bConnectivity;
+        return bConnectivity - aConnectivity;
       });
 
       // Take up to filesPerDomain
@@ -408,13 +410,31 @@ export class SpecVerificationEngine {
   }
 
   /**
+   * Build specs context string capped at maxChars to avoid silent LLM token overflow.
+   * Specs are included in order; the last spec may be truncated if the budget is tight.
+   */
+  private buildSpecsContext(maxChars: number): string {
+    const parts: string[] = [];
+    let total = 0;
+    for (const s of this.specs) {
+      const header = `=== ${s.domain} (${s.path}) ===\n`;
+      const budget = maxChars - total - header.length;
+      if (budget <= 0) break;
+      const body = s.content.length > budget
+        ? s.content.slice(0, budget) + '\n[truncated]'
+        : s.content;
+      parts.push(header + body);
+      total += header.length + body.length;
+    }
+    return parts.join('\n\n');
+  }
+
+  /**
    * Get prediction from LLM
    */
   private async getPrediction(candidate: VerificationCandidate): Promise<FilePrediction> {
-    // Build specs context
-    const specsContent = this.specs
-      .map(s => `=== ${s.domain} (${s.path}) ===\n${s.content}`)
-      .join('\n\n');
+    // Build specs context, capped to avoid silent token overflow (~6 000 tokens at 4 chars/token)
+    const specsContent = this.buildSpecsContext(24_000);
 
     const userPrompt = `Here are the specifications:
 
@@ -452,15 +472,8 @@ Respond in JSON:
       };
     } catch (error) {
       logger.warning(`Prediction failed for ${candidate.path}: ${(error as Error).message}`);
-      return {
-        predictedPurpose: '',
-        predictedImports: [],
-        predictedExports: [],
-        predictedLogic: [],
-        relatedRequirements: [],
-        confidence: 0,
-        reasoning: 'Prediction failed',
-      };
+      // Re-throw so verify() skips this file rather than recording a misleading 0% score
+      throw error;
     }
   }
 
@@ -486,7 +499,7 @@ Respond in JSON:
 
     // Look for JSDoc/TSDoc comment at top of file
     let inBlockComment = false;
-    for (const line of lines.slice(0, 30)) {
+    for (const line of lines) {
       const trimmed = line.trim();
 
       if (trimmed.startsWith('/**')) {
@@ -648,19 +661,22 @@ Respond in JSON:
     requirementCoverage: RequirementCoverage
   ): number {
     // Weighted combination (total = 1.0):
-    //   Purpose:      25%  — semantic similarity of LLM-predicted vs spec purpose
-    //   Imports:       30%  — F1 of predicted vs actual imports
-    //   Exports:       30%  — F1 of predicted vs actual exports
-    //   Requirements:  15%  — fraction of spec requirements covered by the file
+    //   Purpose:      40%  — semantic similarity of LLM-predicted vs actual purpose
+    //   Imports:      15%  — F1 of predicted vs actual imports
+    //   Exports:      15%  — F1 of predicted vs actual exports
+    //   Requirements: 30%  — fraction of spec requirements covered by the file
     //
-    // When imports+exports both score 0 the max achievable is 0.40
-    // (purpose 0.25 + requirements 0.15), so the default pass threshold
-    // (0.5) allows files with strong purpose + requirement coverage to pass.
+    // Rationale: specs describe behavior and architecture, not exact import paths
+    // or export names. Weighting imports/exports too heavily (was 60% combined)
+    // made it structurally impossible to pass — the LLM cannot reliably predict
+    // exact module paths from high-level spec descriptions. With this weighting,
+    // the max achievable when import/export F1 = 0 is 0.70 (above the 0.50
+    // threshold), so files with strong semantic alignment pass correctly.
     return (
-      purposeMatch.similarity * 0.25 +
-      importMatch.f1Score * 0.30 +
-      exportMatch.f1Score * 0.30 +
-      requirementCoverage.coverage * 0.15
+      purposeMatch.similarity * 0.40 +
+      importMatch.f1Score * 0.15 +
+      exportMatch.f1Score * 0.15 +
+      requirementCoverage.coverage * 0.30
     );
   }
 
