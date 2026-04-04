@@ -86,6 +86,7 @@ export class SpecGenerationPipeline implements PipelineContext {
       outputDir: options.outputDir,
       skipStages: options.skipStages ?? [],
       resumeFrom: options.resumeFrom ?? '',
+      force: options.force ?? false,
       maxRetries: options.maxRetries ?? 2,
       rootPath: options.rootPath ?? '',
       saveIntermediate: options.saveIntermediate ?? true,
@@ -136,7 +137,28 @@ export class SpecGenerationPipeline implements PipelineContext {
      ): Promise<T> => {
        if (!this.shouldRunStage(name)) {
          skippedStages.push(name);
+         const saved = await this.loadStageResult<T>(name);
+         if (saved?.success && saved.data) {
+           logger.analysis(`Resume: loaded ${name} from disk`);
+           let data = saved.data;
+           if (normalize) data = normalize(data);
+           if (onSuccess) onSuccess(data);
+           return data;
+         }
          return fallback();
+       }
+
+       // Auto-resume: if a cached result exists on disk and --force is not set, skip the LLM call
+       if (!this.options.force) {
+         const cached = await this.loadStageResult<T>(name);
+         if (cached?.success && cached.data) {
+           logger.analysis(`Auto-resume: ${name} already complete, loading from disk`);
+           skippedStages.push(name);
+           let data = cached.data;
+           if (normalize) data = normalize(data);
+           if (onSuccess) onSuccess(data);
+           return data;
+         }
        }
 
        startStage(name, label);
@@ -745,11 +767,26 @@ export class SpecGenerationPipeline implements PipelineContext {
   }
 
   /**
+   * Map short stage name to the filename used by saveResult.
+   */
+  private stageFileName(stage: string): string {
+    const map: Record<string, string> = {
+      survey: 'stage1-survey',
+      entities: 'stage2-entities',
+      services: 'stage3-services',
+      api: 'stage4-api',
+      architecture: 'stage5-architecture',
+      adr: 'stage6-adr-enrichment',
+    };
+    return map[stage] ?? `stage-${stage}`;
+  }
+
+  /**
    * Load previous stage result (for resume)
    */
   async loadStageResult<T>(stage: string): Promise<StageResult<T> | null> {
     try {
-      const filepath = join(this.options.outputDir, `stage-${stage}.json`);
+      const filepath = join(this.options.outputDir, `${this.stageFileName(stage)}.json`);
       const content = await readFile(filepath, 'utf-8');
       return JSON.parse(content) as StageResult<T>;
     } catch {

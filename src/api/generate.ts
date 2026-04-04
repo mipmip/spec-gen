@@ -204,6 +204,7 @@ export async function specGenGenerate(options: GenerateApiOptions = {}): Promise
     outputDir: join(rootPath, SPEC_GEN_DIR, SPEC_GEN_GENERATION_SUBDIR),
     saveIntermediate: true,
     generateADRs: adr || adrOnly,
+    force: options.force,
   });
 
   let pipelineResult;

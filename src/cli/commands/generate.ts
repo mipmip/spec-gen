@@ -10,7 +10,7 @@ import { confirm } from '@inquirer/prompts';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../../utils/logger.js';
-import { fileExists, formatDuration, formatAge, parseList, readJsonFile } from '../../utils/command-helpers.js';
+import { fileExists, formatDuration, formatAge, parseList, readJsonFile, resolveLLMProvider } from '../../utils/command-helpers.js';
 import {
   LLM_SYSTEM_PROMPT_OVERHEAD_TOKENS,
   GENERATION_OUTPUT_RATIO,
@@ -71,6 +71,7 @@ interface ExtendedGenerateOptions extends GenerateOptions {
   noOverwrite?: boolean;
   yes?: boolean;
   outputDir?: string;
+  force?: boolean;
 }
 
 interface AnalysisData {
@@ -253,6 +254,11 @@ export const generateCommand = new Command('generate')
     'Only generate ADRs (skip spec generation)',
     false
   )
+  .option(
+    '--force',
+    'Force regeneration from scratch, ignoring any cached stage results',
+    false
+  )
   .addHelpText(
     'after',
     `
@@ -270,6 +276,8 @@ Examples:
   $ spec-gen generate --adr          Also generate ADRs
   $ spec-gen generate --adr-only     Only generate ADRs
   $ spec-gen generate -y             Skip confirmation prompts
+  $ spec-gen generate                Auto-resumes from last completed stage if interrupted
+  $ spec-gen generate --force        Force full regeneration, ignoring cached stages
 
 Output structure (OpenSpec format):
   openspec/
@@ -380,21 +388,9 @@ Each spec.md follows OpenSpec conventions:
       // ========================================================================
       logger.section('Pre-flight Checks');
 
-      // Check for API key
-      const anthropicKey = process.env.ANTHROPIC_API_KEY;
-      const openaiKey = process.env.OPENAI_API_KEY;
-      const openaiCompatKey = process.env.OPENAI_COMPAT_API_KEY;
-      const geminiKey = process.env.GEMINI_API_KEY;
-
-      // Resolve provider early so we can skip the API key check for claude-code
-      const envDetectedProvider = anthropicKey ? 'anthropic'
-        : geminiKey ? 'gemini'
-        : openaiCompatKey ? 'openai-compat'
-        : 'openai';
-      const rootConfig = specGenConfig as unknown as Record<string, string>;
-      const effectiveProvider = (specGenConfig.generation.provider ?? rootConfig['provider'] ?? envDetectedProvider) as 'anthropic' | 'openai' | 'openai-compat' | 'gemini' | 'claude-code' | 'mistral-vibe';
-
-      if (effectiveProvider !== 'claude-code' && effectiveProvider !== 'mistral-vibe' && !anthropicKey && !openaiKey && !openaiCompatKey && !geminiKey) {
+      // Resolve provider from env vars + config
+      const resolved = resolveLLMProvider(specGenConfig);
+      if (!resolved) {
         logger.error('No LLM API key found.');
         logger.discovery('Set one of the following environment variables:');
         logger.discovery('  ANTHROPIC_API_KEY    → https://console.anthropic.com/');
@@ -405,6 +401,8 @@ Each spec.md follows OpenSpec conventions:
         process.exitCode = 1;
         return;
       }
+      const effectiveProvider = resolved.provider;
+      const effectiveBaseUrl = resolved.openaiCompatBaseUrl;
 
       // Resolve model with priority: CLI flag > config > provider default
       const defaultModels: Record<string, string> = {
@@ -416,9 +414,6 @@ Each spec.md follows OpenSpec conventions:
         'mistral-vibe': 'mistral-vibe',
       };
       const effectiveModel = opts.model || specGenConfig.generation.model || defaultModels[effectiveProvider];
-
-      // Resolve openai-compat base URL with priority: env var > config (generation or root)
-      const effectiveBaseUrl = process.env.OPENAI_COMPAT_BASE_URL ?? specGenConfig.generation.openaiCompatBaseUrl ?? rootConfig['openaiCompatBaseUrl'];
 
       // Apply SSL verification setting (CLI --insecure or config skipSslVerify)
       if (globalOpts.insecure || specGenConfig.generation.skipSslVerify || specGenConfig.embedding?.skipSslVerify) {
@@ -555,6 +550,7 @@ Each spec.md follows OpenSpec conventions:
         rootPath,
         saveIntermediate: true,
         generateADRs: opts.adr || opts.adrOnly,
+        force: opts.force,
         progress,
         semanticSearch,
       });

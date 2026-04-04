@@ -175,6 +175,8 @@ export interface PipelineOptions {
   rootPath?: string;
   skipStages?: string[];
   resumeFrom?: string;
+  /** Force regeneration from scratch, ignoring any cached stage results on disk */
+  force?: boolean;
   maxRetries?: number;
   saveIntermediate?: boolean;
   generateADRs?: boolean;

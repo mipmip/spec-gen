@@ -130,6 +130,8 @@ export interface GenerateApiOptions extends BaseOptions {
   dryRun?: boolean;
   /** Path to analysis directory. Default: '.spec-gen/analysis/' */
   analysisPath?: string;
+  /** Force regeneration from scratch, ignoring any cached stage results on disk */
+  force?: boolean;
 }
 
 export interface GenerateResult {

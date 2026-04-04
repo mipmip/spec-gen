@@ -54,6 +54,43 @@ export function parseList(value: string): string[] {
   return value.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+export type ProviderName = 'anthropic' | 'openai' | 'openai-compat' | 'gemini' | 'claude-code' | 'mistral-vibe';
+
+/**
+ * Resolve the LLM provider and base URL from environment variables.
+ * Returns null when no key is found, allowing callers to handle the error their own way.
+ *
+ * Priority: ANTHROPIC_API_KEY > GEMINI_API_KEY > OPENAI_COMPAT_API_KEY > OPENAI_API_KEY
+ */
+export function resolveLLMProvider(specGenConfig?: {
+  generation?: { provider?: string; openaiCompatBaseUrl?: string };
+}): { provider: ProviderName; openaiCompatBaseUrl?: string } | null {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const openaiCompatKey = process.env.OPENAI_COMPAT_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+
+  const configProvider = specGenConfig?.generation?.provider as ProviderName | undefined;
+
+  // claude-code and mistral-vibe don't need an API key
+  if (configProvider === 'claude-code' || configProvider === 'mistral-vibe') {
+    return { provider: configProvider };
+  }
+
+  if (!anthropicKey && !geminiKey && !openaiCompatKey && !openaiKey) return null;
+
+  const envProvider: ProviderName = anthropicKey ? 'anthropic'
+    : geminiKey ? 'gemini'
+    : openaiCompatKey ? 'openai-compat'
+    : 'openai';
+
+  const provider = configProvider ?? envProvider;
+  const openaiCompatBaseUrl = process.env.OPENAI_COMPAT_BASE_URL
+    ?? specGenConfig?.generation?.openaiCompatBaseUrl;
+
+  return { provider, openaiCompatBaseUrl };
+}
+
 /**
  * Read and JSON-parse a file, returning null when the file does not exist.
  * Throws a descriptive error when the file exists but contains invalid JSON.

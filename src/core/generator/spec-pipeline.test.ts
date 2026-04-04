@@ -813,6 +813,78 @@ describe('SpecGenerationPipeline', () => {
       const result = await pipeline.loadStageResult('nonexistent-stage');
       expect(result).toBeNull();
     });
+
+    it('loads a stage result using the correct filename mapping', async () => {
+      const { service: llm } = createMockLLMService();
+      const pipeline = new SpecGenerationPipeline(llm, { outputDir: tempDir });
+
+      // Write a fake saved result using the name that saveResult would produce
+      const stageData = { success: true, data: { foo: 'bar' }, tokens: 42, error: undefined };
+      await pipeline.saveResult('stage1-survey', stageData);
+
+      const result = await pipeline.loadStageResult('survey');
+      expect(result).not.toBeNull();
+      expect(result?.success).toBe(true);
+      expect((result?.data as Record<string, string>).foo).toBe('bar');
+    });
+  });
+
+  describe('Auto-resume', () => {
+    it('skips a stage and loads data from disk when cached result exists', async () => {
+      const { service, provider } = createMockLLMService();
+      // LLM should never be called for survey since it is cached
+      provider.setDefaultResponse(MOCK_RESPONSES.architecture);
+
+      const pipeline = new SpecGenerationPipeline(service, {
+        outputDir: tempDir,
+        saveIntermediate: true,
+        skipStages: ['entities', 'services', 'api'],
+      });
+
+      // Pre-populate cache for the survey stage
+      const cachedSurvey = {
+        success: true,
+        tokens: 0,
+        data: JSON.parse(MOCK_RESPONSES.survey),
+      };
+      await pipeline.saveResult('stage1-survey', cachedSurvey);
+
+      const result = await pipeline.run(createMockRepoStructure(), createMockLLMContext());
+
+      // Survey should appear in skippedStages (loaded from disk)
+      expect(result.metadata.skippedStages).toContain('survey');
+      // Architecture should have run
+      expect(result.metadata.completedStages).toContain('architecture');
+      // Survey data loaded from disk — domainSummary matches cached value
+      expect(result.survey.domainSummary).toBe('A user management API service');
+    });
+
+    it('ignores cached stage results and re-runs all stages when force=true', async () => {
+      const { service, provider } = createMockLLMService();
+      provider.setDefaultResponse(MOCK_RESPONSES.survey);
+
+      const pipeline = new SpecGenerationPipeline(service, {
+        outputDir: tempDir,
+        saveIntermediate: true,
+        skipStages: ['entities', 'services', 'api', 'architecture'],
+        force: true,
+      });
+
+      // Pre-populate cache
+      const cachedSurvey = {
+        success: true,
+        tokens: 0,
+        data: { ...JSON.parse(MOCK_RESPONSES.survey), domainSummary: 'CACHED VALUE' },
+      };
+      await pipeline.saveResult('stage1-survey', cachedSurvey);
+
+      const result = await pipeline.run(createMockRepoStructure(), createMockLLMContext());
+
+      // With force=true, cache is ignored — survey should be in completedStages
+      expect(result.metadata.completedStages).toContain('survey');
+      // Result should NOT contain the cached value
+      expect(result.survey.domainSummary).not.toBe('CACHED VALUE');
+    });
   });
 
   describe('Metadata', () => {
