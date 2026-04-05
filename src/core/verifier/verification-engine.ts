@@ -408,18 +408,20 @@ export class SpecVerificationEngine {
       if (structural.has(seg) && knownDomains.includes(seg)) return seg;
     }
 
-    // Prefix match (≥4 chars) — e.g. "utils"→"utilities", "service"→"services"
+    // Shared-prefix match (≥4 chars) — e.g. "utils"→"utilities" share "util"
+    const commonPrefixLen = (a: string, b: string): number => {
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i++;
+      return i;
+    };
     for (const seg of segments) {
       if (seg.length < 4) continue;
-      const hit = knownDomains.find(d => d.startsWith(seg) || seg.startsWith(d));
+      const hit = knownDomains.find(d => commonPrefixLen(seg, d) >= 4);
       if (hit) return hit;
     }
 
-    // 3. Fallback: first non-structural segment regardless of spec existence
-    for (const seg of segments) {
-      if (!structural.has(seg) && seg.length > 1 && !seg.startsWith('.')) return seg;
-    }
-
+    // No match found — return 'misc' rather than inventing a phantom domain
+    // from the filename (which would score 0% against a non-existent spec).
     return 'misc';
   }
 

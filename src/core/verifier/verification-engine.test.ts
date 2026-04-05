@@ -973,27 +973,32 @@ export class PaymentService {}`;
   });
 
   describe('inferDomain', () => {
-    it('should infer domain from file path', () => {
+    it('should match against loaded spec domains', async () => {
       const engine = new SpecVerificationEngine(llmService, {
         rootPath: testDir,
         openspecPath: openspecDir,
         outputDir,
       });
+      // Load specs so knownDomains is populated (only 'user' spec exists in test setup)
+      await (engine as any).loadSpecs();
 
+      // 'user' is a known spec domain — should match exactly
       expect((engine as any).inferDomain('src/user/service.ts')).toBe('user');
-      expect((engine as any).inferDomain('src/services/order-service.ts')).toBe('services');
-      expect((engine as any).inferDomain('lib/auth/provider.ts')).toBe('auth');
+      expect((engine as any).inferDomain('src/core/user/model.ts')).toBe('user');
     });
 
-    it('should skip common non-domain directories', () => {
+    it('should return misc for paths that match no known spec domain', async () => {
       const engine = new SpecVerificationEngine(llmService, {
         rootPath: testDir,
         openspecPath: openspecDir,
         outputDir,
       });
+      await (engine as any).loadSpecs();
 
-      expect((engine as any).inferDomain('src/lib/auth/provider.ts')).toBe('auth');
-      expect((engine as any).inferDomain('src/core/user/model.ts')).toBe('user');
+      // 'services', 'auth' are not in the test spec set — should not invent phantom domains
+      expect((engine as any).inferDomain('src/services/order-service.ts')).toBe('misc');
+      expect((engine as any).inferDomain('lib/auth/provider.ts')).toBe('misc');
+      expect((engine as any).inferDomain('src/utils/command-helpers.ts')).toBe('misc');
     });
   });
 
