@@ -412,6 +412,20 @@ export class SpecGenerationPipeline implements PipelineContext {
   }
 
   /**
+   * Return a formatted list of function signatures for a given file, or null if unavailable.
+   * Used by Stage 3 to ground extracted service operations in real function names.
+   */
+  signaturesFor(filePath: string): string | null {
+    const sigs = this.currentLLMContext?.signatures;
+    if (!sigs) return null;
+    const fileMap = sigs.find(s => s.path === filePath);
+    if (!fileMap || fileMap.entries.length === 0) return null;
+    return fileMap.entries
+      .map(e => `- ${e.signature}${e.docstring ? ` — ${e.docstring}` : ''}`)
+      .join('\n');
+  }
+
+  /**
    * Generate sub-specifications for the direct callees of god functions in a file.
    * Makes a single batched LLM call covering all callees at once.
    * Returns [] when no graph data or no god functions are found.

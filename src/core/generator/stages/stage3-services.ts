@@ -38,7 +38,11 @@ export async function runStage3(
     const fileChunks = graphSection ? [graphSection] : chunks;
     for (let i = 0; i < fileChunks.length; i++) {
       const chunkNote = !graphSection && isLargeFile ? ` (part ${i + 1}/${fileChunks.length})` : '';
-      const userPrompt = `Analyze this file and extract services/modules:\n\n=== ${file.path}${chunkNote} ===\n${fileChunks[i]}`;
+      const signaturesSection = pipeline.signaturesFor(file.path);
+      const signaturesNote = signaturesSection
+        ? `\n\nFunctions available in this file:\n${signaturesSection}\n\nFor each operation you extract, set functionName to exactly match one of the above.`
+        : '';
+      const userPrompt = `Analyze this file and extract services/modules:\n\n=== ${file.path}${chunkNote} ===\n${fileChunks[i]}${signaturesNote}`;
       try {
         const result = await pipeline.llm.completeJSON<ExtractedService[]>({
           systemPrompt,
@@ -74,6 +78,9 @@ export async function runStage3(
       }
     }
 
+    for (const service of servicesFromFile) {
+      service.locationFile = file.path;
+    }
     allServices.push(...servicesFromFile);
   }
 

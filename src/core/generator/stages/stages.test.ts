@@ -32,6 +32,7 @@ function makePipeline(overrides?: Partial<PipelineContext>): PipelineContext {
     saveResult: vi.fn().mockResolvedValue(undefined),
     chunkContent: vi.fn().mockImplementation((content: string) => [content]),
     graphPromptFor: vi.fn().mockReturnValue(null),
+    signaturesFor: vi.fn().mockReturnValue(null),
     generateSubSpecs: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
@@ -189,6 +190,25 @@ describe('runStage3', () => {
     const result = await runStage3(pipeline, SURVEY, entities, [{ path: 'big.ts', content: '' }]);
     expect(result.data![0].subSpecs).toHaveLength(1);
     expect(result.data![0].subSpecs![0].name).toBe('sub');
+  });
+
+  it('should set locationFile on extracted services', async () => {
+    const service = { name: 'AuthService', purpose: 'Auth', operations: [], dependencies: [], sideEffects: [], domain: 'auth' };
+    (pipeline.llm.completeJSON as ReturnType<typeof vi.fn>).mockResolvedValue([service]);
+
+    const result = await runStage3(pipeline, SURVEY, entities, [{ path: 'src/auth.ts', content: '' }]);
+    expect(result.data![0].locationFile).toBe('src/auth.ts');
+  });
+
+  it('should include signatures in prompt when signaturesFor returns a value', async () => {
+    (pipeline.signaturesFor as ReturnType<typeof vi.fn>).mockReturnValue('- authenticate(token: string) — Validates JWT token');
+    const service = { name: 'AuthService', purpose: 'Auth', operations: [], dependencies: [], sideEffects: [], domain: 'auth' };
+    (pipeline.llm.completeJSON as ReturnType<typeof vi.fn>).mockResolvedValue([service]);
+
+    await runStage3(pipeline, SURVEY, entities, [{ path: 'auth.ts', content: '' }]);
+    const userPrompt = (pipeline.llm.completeJSON as ReturnType<typeof vi.fn>).mock.calls[0][0].userPrompt as string;
+    expect(userPrompt).toContain('Functions available in this file:');
+    expect(userPrompt).toContain('authenticate(token: string)');
   });
 
   it('should NOT generate sub-specs when no graph prompt', async () => {

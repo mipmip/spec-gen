@@ -103,6 +103,7 @@ export interface ExtractedService {
   dependencies: string[];
   sideEffects: string[];
   domain: string;
+  locationFile?: string;
   subSpecs?: ServiceSubSpec[];
 }
 
@@ -197,5 +198,6 @@ export interface PipelineContext {
   saveResult(name: string, data: unknown): Promise<void>;
   chunkContent(content: string, maxChars: number): string[];
   graphPromptFor(filePath: string, content?: string): string | null;
+  signaturesFor(filePath: string): string | null;
   generateSubSpecs(filePath: string, parentName: string, parentPurpose: string): Promise<ServiceSubSpec[]>;
 }
