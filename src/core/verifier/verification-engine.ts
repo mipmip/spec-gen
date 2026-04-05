@@ -556,38 +556,48 @@ Respond in JSON:
    */
   private extractPurpose(content: string): string {
     const lines = content.split('\n');
-    const purposeLines: string[] = [];
+    const parts: string[] = [];
 
-    // Scan the full file for the first JSDoc/TSDoc block (/** ... */).
-    // Files commonly place their module-level docblock after a long import
-    // section, so a 30-line cap was causing false "no purpose" results.
-    // Single-line // comments are still only collected from the top 30 lines
-    // to avoid picking up inline implementation notes deep in the file.
+    // 1. Module-level JSDoc block (/** ... */)
     let inBlockComment = false;
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim();
-
-      if (trimmed.startsWith('/**')) {
-        inBlockComment = true;
-        continue;
-      }
-      if (trimmed.startsWith('*/') || trimmed.endsWith('*/')) {
-        inBlockComment = false;
-        break;
-      }
+      if (trimmed.startsWith('/**')) { inBlockComment = true; continue; }
+      if (trimmed.startsWith('*/') || trimmed.endsWith('*/')) { inBlockComment = false; break; }
       if (inBlockComment) {
         const comment = trimmed.replace(/^\*\s*/, '').trim();
-        if (comment && !comment.startsWith('@')) {
-          purposeLines.push(comment);
-        }
+        if (comment && !comment.startsWith('@')) parts.push(comment);
       }
-      // Single-line comments: top of file only
-      if (trimmed.startsWith('//') && !inBlockComment && purposeLines.length < 3 && i < 30) {
-        purposeLines.push(trimmed.replace(/^\/\/\s*/, ''));
+      // Single-line // comments near the top
+      if (trimmed.startsWith('//') && !inBlockComment && parts.length < 3 && i < 30) {
+        parts.push(trimmed.replace(/^\/\/\s*/, ''));
       }
     }
 
-    return purposeLines.join(' ').slice(0, 500);
+    // 2. Exported identifier names — split camelCase/PascalCase/snake_case into words.
+    // This gives the verifier vocabulary to match against even when comments are absent.
+    // E.g. "readSpecGenConfig" → "read Spec Gen Config"; "SPEC_GEN_DIR" → "spec gen dir".
+    const exportMatches = content.matchAll(
+      /^export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\s+(\w+)/gm
+    );
+    const identWords: string[] = [];
+    for (const m of exportMatches) {
+      const name = m[1];
+      // Split on underscores and camelCase boundaries
+      const words = name
+        .replace(/_+/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(w => w.length > 2);
+      identWords.push(...words);
+    }
+    if (identWords.length > 0) {
+      parts.push(identWords.join(' '));
+    }
+
+    return parts.join(' ').slice(0, 800);
   }
 
   /**

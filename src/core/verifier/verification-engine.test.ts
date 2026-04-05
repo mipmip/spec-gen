@@ -418,7 +418,7 @@ export class PaymentService {}`;
       expect(purpose).toContain('payment');
     });
 
-    it('should return empty string when there are no comments', () => {
+    it('should extract identifier words when there are no comments', () => {
       const engine = new SpecVerificationEngine(llmService, {
         rootPath: testDir,
         openspecPath: openspecDir,
@@ -428,7 +428,9 @@ export class PaymentService {}`;
       const content = `export class Foo {}\nexport function bar() {}`;
       const purpose = (engine as any).extractPurpose(content);
 
-      expect(purpose).toBe('');
+      // Now extracts identifier words even without comments
+      expect(purpose).toContain('foo');
+      expect(purpose).toContain('bar');
     });
   });
 
