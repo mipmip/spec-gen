@@ -57,6 +57,7 @@ import {
   handleGetFunctionSkeleton,
   handleGetFunctionBody,
   handleGetDecisions,
+  handleGetRouteInventory,
 } from '../../core/services/mcp-handlers/analysis.js';
 
 // Re-export utilities for tests
@@ -84,6 +85,7 @@ export {
   handleGetMapping,
   handleCheckSpecDrift,
   handleGetFunctionSkeleton,
+  handleGetRouteInventory,
 };
 
 // ============================================================================
@@ -734,6 +736,24 @@ export const TOOL_DEFINITIONS = [
       required: ['directory'],
     },
   },
+  {
+    name: 'get_route_inventory',
+    description:
+      'Return the full HTTP/API route inventory for the project: total count, breakdown by ' +
+      'HTTP method and framework, and the list of individual routes with method, path, ' +
+      'framework, source file, and handler name. ' +
+      'Reads the pre-computed route-inventory.json artifact when available (runs in < 1 ms), ' +
+      'otherwise scans source files live. ' +
+      'Supports Express, Hono, Fastify, NestJS, Next.js App Router, FastAPI, Flask, Django, and more. ' +
+      'Run analyze_codebase first for the fastest results.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+      },
+      required: ['directory'],
+    },
+  },
 ];
 
 // ============================================================================
@@ -870,6 +890,9 @@ async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
       } else if (name === 'get_decisions') {
         const { directory, query } = args as { directory: string; query?: string };
         result = await handleGetDecisions(directory, query);
+      } else if (name === 'get_route_inventory') {
+        const { directory } = args as { directory: string };
+        result = await handleGetRouteInventory(directory);
       } else {
         return {
           content: [{ type: 'text', text: `Unknown tool: ${name}` }],

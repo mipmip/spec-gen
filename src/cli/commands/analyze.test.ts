@@ -55,11 +55,35 @@ vi.mock('../../core/analyzer/artifact-generator.js', () => ({
   AnalysisArtifactGenerator: vi.fn().mockImplementation(function(this: unknown) {
     Object.assign(this as object, {
       generateAndSave: vi.fn().mockResolvedValue({
-        repoStructure: { architecture: { pattern: 'unknown' }, domains: [] },
+        repoStructure: {
+          architecture: { pattern: 'unknown' },
+          domains: [],
+          uiComponents: [],
+          schemas: [],
+          routeInventory: { total: 0, byMethod: {}, byFramework: {}, routes: [] },
+        },
         llmContext: { callGraph: null },
       }),
     });
   }),
+  repoStructureToRepoMap: vi.fn().mockReturnValue({}),
+}));
+
+vi.mock('../../core/analyzer/ui-component-extractor.js', () => ({
+  extractUIComponents: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../../core/analyzer/schema-extractor.js', () => ({
+  extractSchemas: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../../core/analyzer/http-route-parser.js', () => ({
+  buildRouteInventory: vi.fn().mockResolvedValue({ total: 0, byMethod: {}, byFramework: {}, routes: [] }),
+  extractAllHttpEdges: vi.fn().mockResolvedValue({ calls: [], routes: [], edges: [] }),
+}));
+
+vi.mock('../../core/analyzer/ai-config-generator.js', () => ({
+  generateAiConfigs: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../core/services/config-manager.js', () => ({

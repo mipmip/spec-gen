@@ -42,6 +42,10 @@ import {
 } from '../../core/analyzer/architecture-writer.js';
 import { EmbeddingService } from '../../core/analyzer/embedding-service.js';
 import { generateCodebaseDigest } from '../../core/analyzer/codebase-digest.js';
+import { extractUIComponents } from '../../core/analyzer/ui-component-extractor.js';
+import { extractSchemas } from '../../core/analyzer/schema-extractor.js';
+import { buildRouteInventory } from '../../core/analyzer/http-route-parser.js';
+import { generateAiConfigs } from '../../core/analyzer/ai-config-generator.js';
 
 // ============================================================================
 // TYPES
@@ -51,6 +55,7 @@ interface ExtendedAnalyzeOptions extends AnalyzeOptions {
   force?: boolean;
   embed?: boolean;
   reindexSpecs?: boolean;
+  aiConfigs?: boolean;
 }
 
 interface AnalysisResult {
@@ -146,7 +151,18 @@ export async function runAnalysis(
   }
   logger.blank();
 
-  // Phase 3: Generate Artifacts
+  // Phase 3: Run new enrichment extractors in parallel
+  logger.analysis('Extracting UI components, schemas, and routes...');
+
+  const allFilePaths = repoMap.allFiles.map(f => f.path);
+
+  const [uiComponents, schemas, routeInventory] = await Promise.all([
+    extractUIComponents(allFilePaths, rootPath),
+    extractSchemas(allFilePaths, rootPath),
+    buildRouteInventory(allFilePaths, rootPath),
+  ]);
+
+  // Phase 4: Generate Artifacts
   logger.analysis('Generating analysis artifacts...');
 
   const artifactGenerator = new AnalysisArtifactGenerator({
@@ -156,7 +172,11 @@ export async function runAnalysis(
     maxValidationFiles: MAX_VALIDATION_FILES,
   });
 
-  const artifacts = await artifactGenerator.generateAndSave(repoMap, depGraph);
+  const artifacts = await artifactGenerator.generateAndSave(repoMap, depGraph, {
+    uiComponents,
+    schemas,
+    routeInventory,
+  });
 
   // Also save the raw dependency graph
   await writeFile(
@@ -214,6 +234,11 @@ export const analyzeCommand = new Command('analyze')
   .option(
     '--reindex-specs',
     'Re-index OpenSpec specs into the vector index without re-running full analysis (requires EMBED_BASE_URL + EMBED_MODEL)',
+    false
+  )
+  .option(
+    '--ai-configs',
+    'Generate AI tool config files (.cursorrules, .clinerules/spec-gen.md, CLAUDE.md) if they do not already exist',
     false
   )
   .addHelpText(
@@ -562,12 +587,31 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
         { rootPath, outputDir: outputPath },
       );
 
+      // Generate AI tool config files (.cursorrules, .clinerules, CLAUDE.md) if requested
+      let aiConfigsCreated: string[] = [];
+      if (opts.aiConfigs) {
+        aiConfigsCreated = await generateAiConfigs({
+          rootDir: rootPath,
+          analysisDir: opts.output.replace(/\/$/, ''),
+          projectName: result.repoMap.metadata.projectName,
+        });
+      }
+
       // Files generated
       console.log('  Output Files:');
       console.log(`    ├─ ${opts.output}repo-structure.json`);
       console.log(`    ├─ ${opts.output}dependency-graph.json`);
       console.log(`    ├─ ${opts.output}llm-context.json`);
       console.log(`    ├─ ${opts.output}dependencies.mermaid`);
+      if (artifacts.repoStructure.schemas.length > 0) {
+        console.log(`    ├─ ${opts.output}schema-inventory.json  (${artifacts.repoStructure.schemas.length} table(s))`);
+      }
+      if (artifacts.repoStructure.routeInventory.total > 0) {
+        console.log(`    ├─ ${opts.output}route-inventory.json  (${artifacts.repoStructure.routeInventory.total} route(s))`);
+      }
+      if (artifacts.repoStructure.uiComponents.length > 0) {
+        console.log(`    ├─ ${opts.output}repo-structure.json  (${artifacts.repoStructure.uiComponents.length} UI component(s) in uiComponents field)`);
+      }
       if (architectureMdWritten) {
         console.log(`    ├─ ${opts.output}SUMMARY.md`);
         console.log('    ├─ ARCHITECTURE.md');
@@ -591,6 +635,13 @@ After analysis, run 'spec-gen generate' to create OpenSpec files.
         console.log('    | Planning where to add a feature                 | suggest_insertion_points          |');
         console.log('    | Checking if code still matches spec             | check_spec_drift                  |');
         console.log('    | Finding spec requirements by meaning            | search_specs                      |');
+      }
+      if (aiConfigsCreated.length > 0) {
+        console.log('');
+        console.log('  AI config files created:');
+        for (const f of aiConfigsCreated) {
+          console.log(`    ├─ ${f}`);
+        }
       }
       console.log('');
 

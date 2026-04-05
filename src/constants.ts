@@ -84,6 +84,12 @@ export const ARTIFACT_GENERATION_REPORT = 'generation-report.json';
 /** Filename for the shutdown state file */
 export const ARTIFACT_SHUTDOWN_STATE = 'shutdown-state.json';
 
+/** Filename for the database schema inventory artifact */
+export const ARTIFACT_SCHEMA_INVENTORY = 'schema-inventory.json';
+
+/** Filename for the API route inventory artifact */
+export const ARTIFACT_ROUTE_INVENTORY = 'route-inventory.json';
+
 // ============================================================================
 // LLM / PROVIDER LIMITS
 // ============================================================================

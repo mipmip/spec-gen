@@ -2,7 +2,7 @@
  * MCP tool handlers for codebase analysis:
  * analyze_codebase, get_architecture_overview, get_refactor_report,
  * get_duplicate_report, get_signatures, get_mapping, check_spec_drift,
- * get_function_skeleton, get_god_functions.
+ * get_function_skeleton, get_god_functions, get_route_inventory.
  */
 
 import { readFile, stat } from 'node:fs/promises';
@@ -18,6 +18,7 @@ import {
   ARTIFACT_DEPENDENCY_GRAPH,
   ARTIFACT_MAPPING,
   ARTIFACT_REPO_STRUCTURE,
+  ARTIFACT_ROUTE_INVENTORY,
 } from '../../../constants.js';
 import { runAnalysis } from '../../../cli/commands/analyze.js';
 import { analyzeForRefactoring } from '../../analyzer/refactor-analyzer.js';
@@ -535,3 +536,45 @@ export async function handleGetDecisions(
     })),
   };
 }
+
+// ============================================================================
+// ROUTE INVENTORY HANDLER
+// ============================================================================
+
+/**
+ * Return the pre-computed route inventory from the last analysis run.
+ * Falls back to re-computing from source files if the artifact is missing.
+ */
+export async function handleGetRouteInventory(
+  directory: string
+): Promise<Record<string, unknown>> {
+  const absDir = await validateDirectory(directory);
+  const artifactPath = join(absDir, SPEC_GEN_DIR, SPEC_GEN_ANALYSIS_SUBDIR, ARTIFACT_ROUTE_INVENTORY);
+
+  // Try reading cached artifact first
+  try {
+    const raw = await readFile(artifactPath, 'utf-8');
+    const inventory = JSON.parse(raw) as Record<string, unknown>;
+    return { cached: true, ...inventory };
+  } catch {
+    // Artifact not present — run live extraction
+  }
+
+  const { buildRouteInventory } = await import('../../analyzer/http-route-parser.js');
+  const { RepositoryMapper } = await import('../../analyzer/repository-mapper.js');
+  const { readSpecGenConfig } = await import('../config-manager.js');
+
+  const specGenConfig = await readSpecGenConfig(absDir);
+  const configExclude = specGenConfig?.analysis.excludePatterns ?? [];
+
+  const mapper = new RepositoryMapper(absDir, {
+    maxFiles: DEFAULT_MAX_FILES,
+    excludePatterns: configExclude.length > 0 ? configExclude : undefined,
+  });
+  const repoMap = await mapper.map();
+  const filePaths = repoMap.allFiles.map(f => f.path);
+
+  const inventory = await buildRouteInventory(filePaths, absDir);
+  return { cached: false, ...inventory };
+}
+

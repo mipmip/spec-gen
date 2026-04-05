@@ -238,3 +238,55 @@ See `.claude/skills/spec-gen.md` for the skill version.
 
 **OpenSpec Native:**
 See `skills/openspec-skill.md` for OpenSpec skill format.
+
+---
+
+## Mistral Vibe (local CLI, no API key)
+
+spec-gen supports the `mistral-vibe` provider, which routes generation through the local
+[`vibe` CLI](https://github.com/withvibe/vibe) — a standalone binary that runs Mistral models
+locally. No API key or network connection is required.
+
+### Setup
+
+```bash
+# Install the vibe CLI (see https://github.com/withvibe/vibe for your platform)
+# Then configure spec-gen to use it:
+spec-gen generate --provider mistral-vibe
+
+# Or set it in .spec-gen/config.json:
+# { "generation": { "provider": "mistral-vibe" } }
+
+# If vibe is not on PATH, point to it:
+export MISTRAL_VIBE_CLI=/path/to/vibe
+```
+
+### Constraints and recommendations
+
+| Property | Value |
+|----------|-------|
+| Context window | 128 000 tokens |
+| **Max output** | **4 096 tokens** |
+| API key required | No |
+| Network required | No |
+
+Because the output limit is 4 096 tokens (vs 16 000 for Claude), generation produces
+**shorter specs per run**. To work within this constraint:
+
+1. **One domain at a time** — run `spec-gen generate` with `--domain <name>` so each
+   invocation focuses on a single domain and stays within the output budget.
+2. **Use the analysis artifacts** — always run `spec-gen analyze` first; the digest files
+   reduce how much the model needs to infer, leaving more of the output budget for spec content.
+3. **Keep prompts concise** — the pipeline automatically trims context to fit the 128 K
+   window, but fewer input tokens leave more room for output.
+4. **Expect multi-pass generation** — large codebases may require multiple `generate` runs
+   (one per domain) rather than a single all-domains run.
+
+### Selecting a model / agent
+
+```bash
+# Use a specific Mistral agent registered in your vibe installation:
+spec-gen generate --provider mistral-vibe --model mistral-large-latest
+```
+
+If `--model` is omitted, `vibe` uses its default agent.
