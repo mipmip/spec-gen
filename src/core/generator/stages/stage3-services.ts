@@ -60,7 +60,7 @@ export async function runStage3(
     }
     if (isLargeFile && !graphSection) {
       for (const service of servicesFromFile) {
-        service.purpose = `[PARTIAL SPEC — file too large to fully analyze (${chunks.length} parts)] ${service.purpose}`;
+        service.purpose = `${service.purpose} *(analyzed in ${chunks.length} chunks)*`;
       }
     }
 

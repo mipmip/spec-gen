@@ -129,14 +129,14 @@ describe('runStage2', () => {
     expect(pipeline.saveResult).not.toHaveBeenCalled();
   });
 
-  it('should mark large-file entities with PARTIAL SPEC prefix', async () => {
+  it('should mark large-file entities with chunk count suffix', async () => {
     // Return 3 chunks to simulate a large file
     vi.mocked(astChunkContent).mockResolvedValue(['chunk1', 'chunk2', 'chunk3']);
     const entity = { name: 'Big', description: 'Original', properties: [], relationships: [], validations: [], scenarios: [], location: '' };
     (pipeline.llm.completeJSON as ReturnType<typeof vi.fn>).mockResolvedValue([entity]);
 
     const result = await runStage2(pipeline, SURVEY, [{ path: 'big.ts', content: 'x' }]);
-    expect(result.data![0].description).toContain('[PARTIAL SPEC');
+    expect(result.data![0].description).toContain('analyzed in');
   });
 });
 
@@ -207,13 +207,13 @@ describe('runStage3', () => {
     expect(result.data).toEqual([]);
   });
 
-  it('should mark large-file services with PARTIAL SPEC prefix', async () => {
+  it('should mark large-file services with chunk count suffix', async () => {
     vi.mocked(astChunkContent).mockResolvedValue(['c1', 'c2']);
     const service = { name: 'Svc', purpose: 'Original', operations: [], dependencies: [], sideEffects: [], domain: 'x' };
     (pipeline.llm.completeJSON as ReturnType<typeof vi.fn>).mockResolvedValue([service]);
 
     const result = await runStage3(pipeline, SURVEY, entities, [{ path: 'large.ts', content: '' }]);
-    expect(result.data![0].purpose).toContain('[PARTIAL SPEC');
+    expect(result.data![0].purpose).toContain('analyzed in');
   });
 });
 
@@ -269,13 +269,13 @@ describe('runStage4', () => {
     expect(result.data).toEqual([]);
   });
 
-  it('should mark large-file endpoints with PARTIAL SPEC prefix', async () => {
+  it('should mark large-file endpoints with chunk count suffix', async () => {
     vi.mocked(astChunkContent).mockResolvedValue(['c1', 'c2']);
     const endpoint = { method: 'GET', path: '/x', purpose: 'Original', scenarios: [] };
     (pipeline.llm.completeJSON as ReturnType<typeof vi.fn>).mockResolvedValue([endpoint]);
 
     const result = await runStage4(pipeline, [{ path: 'big.ts', content: '' }]);
-    expect(result.data![0].purpose).toContain('[PARTIAL SPEC');
+    expect(result.data![0].purpose).toContain('analyzed in');
   });
 
   it('should save intermediate results when saveIntermediate is true', async () => {
