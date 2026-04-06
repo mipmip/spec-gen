@@ -671,6 +671,8 @@ Always use these before writing or modifying code.
 
 **Mistral Vibe (Devstral)** — inject CODEBASE.md into Vibe's global context:
 
+> **Vibe shows "0 skills" after setup?** Check `~/.vibe/config.toml` — if `enabled_skills` is set to a pattern like `["SKILL-*"]` (the old naming format), it won't match the new `spec-gen-*` names. Change it to `["spec-gen-*"]` or `["*"]` to load all skills.
+
 1. Run `spec-gen analyze` to generate `.spec-gen/analysis/CODEBASE.md`
 2. Append it to `~/.vibe/prompts/spec-gen.md` so Devstral absorbs it at every session start:
 
