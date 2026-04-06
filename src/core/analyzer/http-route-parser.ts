@@ -685,7 +685,7 @@ function detectTsFramework(source: string, filePath: string): string {
   if (/from\s+['"]express['"]/.test(source) || /require\s*\(\s*['"]express['"]\s*\)/.test(source)) return 'express';
   if (/from\s+['"]koa['"]/.test(source)) return 'koa';
   if (/from\s+['"]elysia['"]/.test(source)) return 'elysia';
-  if (EXPRESS_ROUTE_RE.test(source)) return 'express';
+  if (new RegExp(EXPRESS_ROUTE_RE.source).test(source)) return 'express';
   return 'unknown';
 }
 
