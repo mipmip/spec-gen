@@ -64,6 +64,7 @@
     "dist",
     "!dist/**/*.test.*",
     "src/viewer",
+    "examples",
     "README.md",
     "LICENSE"
   ],
