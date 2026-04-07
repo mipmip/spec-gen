@@ -31,7 +31,7 @@ import {
   analyzeTestCoverage,
   detectFramework,
 } from '../../core/test-generator/index.js';
-import type { TestFramework, TestCoverageReport } from '../../types/test-generator.js';
+import type { TestFramework, TestCoverageReport, GeneratedTestFile } from '../../types/test-generator.js';
 import {
   SPEC_GEN_DIR,
   SPEC_GEN_LOGS_SUBDIR,
@@ -91,7 +91,7 @@ function displayCoverageReport(report: TestCoverageReport, json: boolean): void 
 }
 
 function displayGenerationSummary(
-  files: Array<{ outputPath: string; scenarios: { length: number }[]; isNew: boolean }>,
+  files: GeneratedTestFile[],
   written: number,
   skipped: number,
   merged: number,

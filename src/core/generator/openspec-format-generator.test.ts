@@ -591,6 +591,13 @@ describe('inferTestAnnotation (via generateSpecs)', () => {
         integrations: [],
       },
       adrs: [],
+      metadata: {
+        totalTokens: 0,
+        estimatedCost: 0,
+        duration: 0,
+        completedStages: [],
+        skippedStages: [],
+      },
     };
   }
 

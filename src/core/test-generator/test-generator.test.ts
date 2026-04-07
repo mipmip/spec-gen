@@ -11,6 +11,9 @@ const MOCK_SCENARIO: ParsedScenario = {
   when: ['POST /api/auth/login is called with those credentials'],
   then: ['the system returns a JWT token, expiry time, and userId with status 200'],
   mappedFunctions: [],
+  skip: false,
+  tags: [],
+  priority: 'normal',
 };
 
 const MOCK_SCENARIO_2: ParsedScenario = {
@@ -22,6 +25,9 @@ const MOCK_SCENARIO_2: ParsedScenario = {
   when: ['POST /api/auth/login is called'],
   then: ['the system returns status 401 with error "Invalid credentials"'],
   mappedFunctions: [],
+  skip: false,
+  tags: [],
+  priority: 'normal',
 };
 
 const MOCK_TASKS_SCENARIO: ParsedScenario = {
@@ -33,6 +39,9 @@ const MOCK_TASKS_SCENARIO: ParsedScenario = {
   when: ['POST /api/tasks is called'],
   then: ['the system creates the task with default status "todo" and returns it with status 201'],
   mappedFunctions: [],
+  skip: false,
+  tags: [],
+  priority: 'normal',
 };
 
 describe('generateTests', () => {
