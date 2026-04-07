@@ -78,6 +78,7 @@ export function parseGraph(raw, palette = CLUSTER_PALETTE) {
     source: e.source,
     target: e.target,
     isType: e.isTypeOnly || false,
+    isCall: e.isCallEdge || false,
     importedNames: e.importedNames || [],
   }));
 
@@ -207,6 +208,13 @@ export function computeLayout(nodes, edges, W = 900, H = 540) {
       disp[e.source].y -= (dy / d) * f;
       disp[e.target].x += (dx / d) * f;
       disp[e.target].y += (dy / d) * f;
+    });
+
+    // Gravity toward center
+    const gravity = 0.04;
+    nodes.forEach((n) => {
+      disp[n.id].x += (W / 2 - pos[n.id].x) * gravity;
+      disp[n.id].y += (H / 2 - pos[n.id].y) * gravity;
     });
 
     const temp = k * Math.max(0.05, 1 - iter / 80) * 0.5;

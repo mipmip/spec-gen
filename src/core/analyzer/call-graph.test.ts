@@ -727,3 +727,156 @@ describe('CallGraphBuilder — C++', () => {
     expect(result.edges).toHaveLength(0);
   });
 });
+
+// ============================================================================
+// Swift
+// ============================================================================
+
+describe('CallGraphBuilder — Swift', () => {
+  it('extracts free functions and resolves direct calls', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build([{
+      path: 'Sources/App.swift',
+      language: 'Swift',
+      content: `
+        func helper() {}
+        func main() { helper() }
+      `,
+    }]);
+
+    expect(nodeNames(result)).toContain('helper');
+    expect(nodeNames(result)).toContain('main');
+    expect(edgePairs(result)).toContain('main→helper');
+  });
+
+  it('extracts methods from struct declarations with correct className', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build([{
+      path: 'Sources/Timer.swift',
+      language: 'Swift',
+      content: `
+        struct TimerManager {
+            func start() {}
+            func stop() { start() }
+        }
+      `,
+    }]);
+
+    const startNode = Array.from(result.nodes.values()).find(n => n.name === 'start');
+    expect(startNode?.className).toBe('TimerManager');
+    expect(edgePairs(result)).toContain('stop→start');
+  });
+
+  it('resolves self.method() calls within the same class', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build([{
+      path: 'Sources/ViewModel.swift',
+      language: 'Swift',
+      content: `
+        class SettingsViewModel {
+            func refresh() {}
+            func load() { self.refresh() }
+        }
+      `,
+    }]);
+
+    expect(edgePairs(result)).toContain('load→refresh');
+  });
+
+  it('resolves cross-file calls by function name', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build([
+      {
+        path: 'Sources/Helpers.swift',
+        language: 'Swift',
+        content: `func formatDate() -> String { return "" }`,
+      },
+      {
+        path: 'Sources/View.swift',
+        language: 'Swift',
+        content: `
+          func render() {
+              let _ = formatDate()
+          }
+        `,
+      },
+    ]);
+
+    expect(edgePairs(result)).toContain('render→formatDate');
+  });
+
+  it('resolves cross-file calls via capitalized type name (Strategy 1b)', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build([
+      {
+        path: 'Sources/Logger.swift',
+        language: 'Swift',
+        content: `
+          class Logger {
+              func record(_ msg: String) {}
+          }
+        `,
+      },
+      {
+        path: 'Sources/Manager.swift',
+        language: 'Swift',
+        content: `
+          class Manager {
+              func run() { Logger.record("started") }
+          }
+        `,
+      },
+    ]);
+
+    // Logger is capitalized → type_name resolution picks Logger.record in Logger.swift
+    const edge = result.edges.find(e => e.calleeName === 'record');
+    expect(edge).toBeDefined();
+    const callerNode = result.nodes.get(edge!.callerId);
+    const calleeNode = result.nodes.get(edge!.calleeId);
+    expect(callerNode?.filePath).toBe('Sources/Manager.swift');
+    expect(calleeNode?.filePath).toBe('Sources/Logger.swift');
+  });
+
+  it('ignores Swift stdlib builtins as call targets', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build([{
+      path: 'Sources/Utils.swift',
+      language: 'Swift',
+      content: `
+        func process(_ items: [String]) {
+            let _ = items.map { $0 }
+            print("done")
+            fatalError("oops")
+        }
+      `,
+    }]);
+
+    // map, print, fatalError are in IGNORED_CALLEES
+    expect(result.edges).toHaveLength(0);
+  });
+
+  it('does not mark regular Swift functions as async', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build([{
+      path: 'Sources/Sync.swift',
+      language: 'Swift',
+      content: `func doWork() {}`,
+    }]);
+
+    const node = Array.from(result.nodes.values()).find(n => n.name === 'doWork');
+    expect(node?.isAsync).toBe(false);
+    expect(node?.language).toBe('Swift');
+  });
+
+  it('marks async Swift functions correctly', async () => {
+    const builder = new CallGraphBuilder();
+    const result = await builder.build([{
+      path: 'Sources/Async.swift',
+      language: 'Swift',
+      content: `func fetchData() async -> String { return "" }`,
+    }]);
+
+    const node = Array.from(result.nodes.values()).find(n => n.name === 'fetchData');
+    expect(node?.isAsync).toBe(true);
+  });
+});

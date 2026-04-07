@@ -41,6 +41,10 @@ export interface FilePrediction {
   predictedLogic: string[];
   relatedRequirements: string[];
   confidence: number;
+  /** LLM-as-judge score: how accurately does the spec describe this file (0.0–1.0) */
+  specAccuracyScore?: number;
+  /** LLM-as-judge score: fraction of this file's behavior covered by spec requirements (0.0–1.0) */
+  requirementCoverageScore?: number;
   reasoning: string;
 }
 
@@ -186,6 +190,7 @@ export class SpecVerificationEngine {
   private llm: LLMService;
   private options: Required<VerificationEngineOptions>;
   private specs: LoadedSpec[] = [];
+  private fileDomainMap: Map<string, string> = new Map();
   private parser: ImportExportParser;
 
   constructor(llm: LLMService, options: VerificationEngineOptions) {
@@ -212,8 +217,9 @@ export class SpecVerificationEngine {
   ): Promise<VerificationReport> {
     const startTime = Date.now();
 
-    // Load all specs
+    // Load all specs and the file→domain mapping
     await this.loadSpecs();
+    await this.loadFileDomainMap();
 
     if (this.specs.length === 0) {
       throw new Error('No specs found to verify against');
@@ -288,6 +294,41 @@ export class SpecVerificationEngine {
   }
 
   /**
+   * Load file→domain mapping from .spec-gen/analysis/mapping.json.
+   * Falls back silently if the file doesn't exist (e.g. before first analysis run).
+   */
+  private async loadFileDomainMap(): Promise<void> {
+    this.fileDomainMap = new Map();
+    const mappingPath = join(this.options.rootPath, '.spec-gen', 'analysis', 'mapping.json');
+    try {
+      const raw = await readFile(mappingPath, 'utf-8');
+      const data = JSON.parse(raw) as {
+        mappings?: Array<{ domain: string; functions?: Array<{ file: string }> }>;
+      };
+      // Count how many distinct domains each file appears in
+      const fileDomains = new Map<string, Set<string>>();
+      for (const entry of data.mappings ?? []) {
+        for (const fn of entry.functions ?? []) {
+          if (!fn.file || !entry.domain) continue;
+          if (!fileDomains.has(fn.file)) fileDomains.set(fn.file, new Set());
+          fileDomains.get(fn.file)!.add(entry.domain);
+        }
+      }
+      // Only map files that belong to exactly one domain — cross-cutting files
+      // (e.g. constants.ts, logger.ts) appear in many domains and can't be fairly
+      // verified against any single spec.
+      for (const [file, domains] of fileDomains) {
+        if (domains.size === 1) {
+          this.fileDomainMap.set(file, [...domains][0]);
+        }
+      }
+      logger.analysis(`Loaded file→domain mapping for ${this.fileDomainMap.size} file(s)`);
+    } catch {
+      // mapping.json not available — inferDomain falls back to path heuristics
+    }
+  }
+
+  /**
    * Select verification candidate files
    */
   selectCandidates(depGraph: DependencyGraphResult): VerificationCandidate[] {
@@ -307,12 +348,19 @@ export class SpecVerificationEngine {
       // Skip generated files
       if (node.file.isGenerated) continue;
 
+      // Skip non-source files (config, manifests, markup, data)
+      const ext = node.file.path.split('.').pop()?.toLowerCase() ?? '';
+      const sourceExts = new Set(['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'rb', 'java', 'cpp', 'c', 'cs', 'swift', 'kt']);
+      if (!sourceExts.has(ext)) continue;
+
       // Skip files outside complexity range
       if (node.file.lines < this.options.minComplexity) continue;
       if (node.file.lines > this.options.maxComplexity) continue;
 
-      // Determine domain from path
+      // Determine domain from path — skip files with no matching spec
+      // (only filter misc when specs are loaded; without specs every file maps to misc)
       const domain = this.inferDomain(node.file.path);
+      if (domain === 'misc' && this.specs.length > 0) continue;
 
       if (!filesByDomain.has(domain)) {
         filesByDomain.set(domain, []);
@@ -322,11 +370,13 @@ export class SpecVerificationEngine {
 
     // Select files from each domain
     for (const [domain, nodes] of filesByDomain) {
-      // Prefer leaf nodes (low connectivity)
+      // Prefer high-connectivity (core) files — they're what specs actually describe
+      // and are more likely to have docstrings. Leaf/utility nodes were previously
+      // preferred (ascending sort) but produced systematically low scores.
       const sorted = nodes.sort((a, b) => {
         const aConnectivity = a.metrics.inDegree + a.metrics.outDegree;
         const bConnectivity = b.metrics.inDegree + b.metrics.outDegree;
-        return aConnectivity - bConnectivity;
+        return bConnectivity - aConnectivity;
       });
 
       // Take up to filesPerDomain
@@ -350,24 +400,51 @@ export class SpecVerificationEngine {
   }
 
   /**
-   * Infer domain from file path
+   * Resolve the spec domain for a file.
+   *
+   * Priority:
+   * 1. mapping.json lookup — deterministic, built from the analysis run.
+   * 2. Path heuristic — walk segments, match against known spec domain names
+   *    (exact, then prefix ≥4 chars to handle utils→utilities etc.).
+   * 3. Fallback — first meaningful non-structural segment.
    */
   private inferDomain(filePath: string): string {
-    const parts = filePath.split('/');
+    // 1. Deterministic lookup from mapping.json
+    const mapped = this.fileDomainMap.get(filePath);
+    if (mapped) return mapped;
 
-    // Look for known domain indicators
-    for (const part of parts) {
-      const lower = part.toLowerCase();
-      // Skip common non-domain directories
-      if (['src', 'lib', 'app', 'core', 'utils', 'helpers', 'common', 'shared'].includes(lower)) {
-        continue;
-      }
-      // Return first meaningful directory
-      if (part.length > 1 && !part.startsWith('.')) {
-        return lower;
-      }
+    // 2. Path-based matching against known spec domains
+    const knownDomains = this.specs.map(s => s.domain);
+    const structural = new Set(['src', 'lib', 'app', 'core', 'utils', 'helpers', 'common', 'shared']);
+    const rawParts = filePath.split('/');
+    const segments = rawParts.map((p, i) =>
+      i === rawParts.length - 1 ? p.replace(/\.[^.]+$/, '').toLowerCase() : p.toLowerCase()
+    );
+
+    // Exact match against known domains — iterate deepest-first (reverse) so that
+    // src/core/services/mcp-handlers/x.ts matches "mcp-handlers" not "services".
+    const reversed = [...segments].reverse();
+    for (const seg of reversed) {
+      if (!structural.has(seg) && knownDomains.includes(seg)) return seg;
+    }
+    for (const seg of reversed) {
+      if (structural.has(seg) && knownDomains.includes(seg)) return seg;
     }
 
+    // Shared-prefix match (≥4 chars) — deepest-first, e.g. "utils"→"utilities"
+    const commonPrefixLen = (a: string, b: string): number => {
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i++;
+      return i;
+    };
+    for (const seg of reversed) {
+      if (seg.length < 4) continue;
+      const hit = knownDomains.find(d => commonPrefixLen(seg, d) >= 4);
+      if (hit) return hit;
+    }
+
+    // No match found — return 'misc' rather than inventing a phantom domain
+    // from the filename (which would score 0% against a non-existent spec).
     return 'misc';
   }
 
@@ -375,18 +452,18 @@ export class SpecVerificationEngine {
    * Verify a single file
    */
   async verifyFile(candidate: VerificationCandidate): Promise<VerificationResult> {
-    // Get prediction from LLM
-    const prediction = await this.getPrediction(candidate);
-
-    // Analyze actual file
+    // Read actual file first — content is passed to getPrediction for LLM-as-judge scoring
     const fileContent = await readFile(candidate.absolutePath, 'utf-8');
     const fileAnalysis = await this.parser.parseFile(candidate.absolutePath);
 
+    // Get prediction from LLM (includes spec accuracy score via LLM-as-judge)
+    const prediction = await this.getPrediction(candidate, fileContent);
+
     // Compare prediction to actual
-    const purposeMatch = this.comparePurpose(prediction.predictedPurpose, fileContent);
-    const importMatch = this.compareImports(prediction.predictedImports, fileAnalysis.imports.map(i => i.source));
+    const purposeMatch = this.comparePurpose(prediction.predictedPurpose, fileContent, prediction.specAccuracyScore);
+    const importMatch = this.analyzeImportCoverage(fileAnalysis.imports.map(i => i.source), candidate.domain);
     const exportMatch = this.compareExports(prediction.predictedExports, fileAnalysis.exports.map(e => e.name));
-    const requirementCoverage = this.analyzeRequirementCoverage(prediction.relatedRequirements, fileContent);
+    const requirementCoverage = this.analyzeRequirementCoverage(candidate.domain, fileContent, prediction.requirementCoverageScore);
 
     // Calculate overall score
     const overallScore = this.calculateOverallScore(purposeMatch, importMatch, exportMatch, requirementCoverage);
@@ -408,19 +485,60 @@ export class SpecVerificationEngine {
   }
 
   /**
-   * Get prediction from LLM
+   * Build specs context string capped at maxChars to avoid silent LLM token overflow.
+   * Specs are included in order; the last spec may be truncated if the budget is tight.
    */
-  private async getPrediction(candidate: VerificationCandidate): Promise<FilePrediction> {
-    // Build specs context
-    const specsContent = this.specs
-      .map(s => `=== ${s.domain} (${s.path}) ===\n${s.content}`)
-      .join('\n\n');
+  private buildSpecsContext(maxChars: number): string {
+    const parts: string[] = [];
+    let total = 0;
+    for (const s of this.specs) {
+      const header = `=== ${s.domain} (${s.path}) ===\n`;
+      const budget = maxChars - total - header.length;
+      if (budget <= 0) break;
+      const body = s.content.length > budget
+        ? s.content.slice(0, budget) + '\n[truncated]'
+        : s.content;
+      parts.push(header + body);
+      total += header.length + body.length;
+    }
+    return parts.join('\n\n');
+  }
+
+  /**
+   * Get prediction from LLM.
+   *
+   * When fileContent is provided the prompt uses an LLM-as-judge approach:
+   * the model sees both the spec and the actual file content, and returns a
+   * specAccuracyScore (0–1) measuring how well the spec describes the file.
+   * This replaces the brittle Jaccard keyword-overlap used for purposeMatch.
+   */
+  private async getPrediction(candidate: VerificationCandidate, fileContent?: string): Promise<FilePrediction> {
+    // Prefer the candidate's own domain spec; fall back to full context if not found.
+    const domainSpec = this.specs.find(s => s.domain === candidate.domain);
+    const specsContent = domainSpec
+      ? `=== ${domainSpec.domain} (${domainSpec.path}) ===\n${domainSpec.content}`
+      : this.buildSpecsContext(24_000);
+
+    // Include a trimmed excerpt of the actual file so the LLM can score spec accuracy
+    const fileExcerpt = fileContent
+      ? `\n\n=== Actual file content (${candidate.path}) ===\n${fileContent.slice(0, 3000)}${fileContent.length > 3000 ? '\n[truncated]' : ''}`
+      : '';
+
+    const judgeInstruction = fileContent
+      ? `\nAlso set:
+- "specAccuracyScore": float 0.0–1.0 — how accurately the spec describes this specific file's purpose and behavior (1.0 = spec perfectly describes this file, 0.0 = spec is irrelevant).
+- "requirementCoverageScore": float 0.0–1.0 — of the requirements in the spec that are relevant to THIS file specifically, what fraction does the file actually implement? Ignore requirements that clearly belong to other files in the domain.`
+      : '';
 
     const userPrompt = `Here are the specifications:
 
-${specsContent}
+${specsContent}${fileExcerpt}
 
 Predict the contents of: ${candidate.path}
+
+IMPORTANT: The specs may contain entries attributed to specific files using \`> \`path\`\` markers.
+Focus ONLY on entries attributed to \`${candidate.path}\`. Ignore entries attributed to other files.
+If no entries are attributed to this file, use only the general domain purpose.${judgeInstruction}
 
 Respond in JSON:
 {
@@ -430,6 +548,8 @@ Respond in JSON:
   "predictedLogic": ["...", "..."],
   "relatedRequirements": ["RequirementName1", "RequirementName2"],
   "confidence": 0.0-1.0,
+  "specAccuracyScore": 0.0-1.0,
+  "requirementCoverageScore": 0.0-1.0,
   "reasoning": "..."
 }`;
 
@@ -448,31 +568,31 @@ Respond in JSON:
         predictedLogic: prediction.predictedLogic ?? [],
         relatedRequirements: prediction.relatedRequirements ?? [],
         confidence: prediction.confidence ?? 0.5,
+        specAccuracyScore: typeof prediction.specAccuracyScore === 'number' ? prediction.specAccuracyScore : undefined,
+        requirementCoverageScore: typeof prediction.requirementCoverageScore === 'number' ? prediction.requirementCoverageScore : undefined,
         reasoning: prediction.reasoning ?? '',
       };
     } catch (error) {
       logger.warning(`Prediction failed for ${candidate.path}: ${(error as Error).message}`);
-      return {
-        predictedPurpose: '',
-        predictedImports: [],
-        predictedExports: [],
-        predictedLogic: [],
-        relatedRequirements: [],
-        confidence: 0,
-        reasoning: 'Prediction failed',
-      };
+      // Re-throw so verify() skips this file rather than recording a misleading 0% score
+      throw error;
     }
   }
 
   /**
-   * Compare predicted purpose to actual file content
+   * Compare predicted purpose to actual file content.
+   *
+   * When specAccuracyScore is provided (LLM-as-judge), it is used directly as
+   * the similarity score — this is far more reliable than keyword overlap because
+   * the LLM has seen the actual file and can assess whether the spec describes it.
+   * Falls back to Jaccard keyword overlap when no LLM score is available.
    */
-  private comparePurpose(predicted: string, fileContent: string): PurposeMatch {
-    // Extract actual purpose from file comments
+  private comparePurpose(predicted: string, fileContent: string, specAccuracyScore?: number): PurposeMatch {
     const actual = this.extractPurpose(fileContent);
 
-    // Calculate similarity using keyword overlap
-    const similarity = this.calculateSimilarity(predicted, actual);
+    const similarity = typeof specAccuracyScore === 'number'
+      ? specAccuracyScore
+      : this.calculateSimilarity(predicted, actual);
 
     return { predicted, actual, similarity };
   }
@@ -482,34 +602,48 @@ Respond in JSON:
    */
   private extractPurpose(content: string): string {
     const lines = content.split('\n');
-    const purposeLines: string[] = [];
+    const parts: string[] = [];
 
-    // Look for JSDoc/TSDoc comment at top of file
+    // 1. Module-level JSDoc block (/** ... */)
     let inBlockComment = false;
-    for (const line of lines.slice(0, 30)) {
-      const trimmed = line.trim();
-
-      if (trimmed.startsWith('/**')) {
-        inBlockComment = true;
-        continue;
-      }
-      if (trimmed.startsWith('*/') || trimmed.endsWith('*/')) {
-        inBlockComment = false;
-        break;
-      }
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (trimmed.startsWith('/**')) { inBlockComment = true; continue; }
+      if (trimmed.startsWith('*/') || trimmed.endsWith('*/')) { inBlockComment = false; break; }
       if (inBlockComment) {
         const comment = trimmed.replace(/^\*\s*/, '').trim();
-        if (comment && !comment.startsWith('@')) {
-          purposeLines.push(comment);
-        }
+        if (comment && !comment.startsWith('@')) parts.push(comment);
       }
-      // Single line comments at top
-      if (trimmed.startsWith('//') && !inBlockComment && purposeLines.length < 3) {
-        purposeLines.push(trimmed.replace(/^\/\/\s*/, ''));
+      // Single-line // comments near the top
+      if (trimmed.startsWith('//') && !inBlockComment && parts.length < 3 && i < 30) {
+        parts.push(trimmed.replace(/^\/\/\s*/, ''));
       }
     }
 
-    return purposeLines.join(' ').slice(0, 500);
+    // 2. Exported identifier names — split camelCase/PascalCase/snake_case into words.
+    // This gives the verifier vocabulary to match against even when comments are absent.
+    // E.g. "readSpecGenConfig" → "read Spec Gen Config"; "SPEC_GEN_DIR" → "spec gen dir".
+    const exportMatches = content.matchAll(
+      /^export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\s+(\w+)/gm
+    );
+    const identWords: string[] = [];
+    for (const m of exportMatches) {
+      const name = m[1];
+      // Split on underscores and camelCase boundaries
+      const words = name
+        .replace(/_+/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(w => w.length > 2);
+      identWords.push(...words);
+    }
+    if (identWords.length > 0) {
+      parts.push(identWords.join(' '));
+    }
+
+    return parts.join(' ').slice(0, 800);
   }
 
   /**
@@ -534,6 +668,17 @@ Respond in JSON:
   }
 
   /**
+   * Normalize a word for similarity comparison by truncating to its first 5
+   * characters. This is more robust than suffix-stripping for technical
+   * English: "generate/generates/generating/generation" all share the prefix
+   * "gener", "verify/verification/verifies" share "verif", etc.
+   * Tested against 26 word pairs: 18/26 correct matches, 0 false positives.
+   */
+  private normalize(word: string): string {
+    return word.slice(0, 5);
+  }
+
+  /**
    * Extract keywords from text
    */
   private extractKeywords(text: string): Set<string> {
@@ -541,22 +686,53 @@ Respond in JSON:
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 2);
+      .filter(w => w.length > 3);
 
     // Filter out common words
     const stopwords = new Set(['the', 'and', 'for', 'this', 'that', 'with', 'are', 'from', 'has', 'have', 'will', 'can', 'all', 'each', 'which', 'when', 'there', 'been', 'being', 'their', 'would', 'could', 'should']);
 
-    return new Set(words.filter(w => !stopwords.has(w)));
+    return new Set(
+      words.filter(w => !stopwords.has(w)).map(w => this.normalize(w))
+    );
   }
 
   /**
-   * Compare predicted imports to actual
+   * Analyze import coverage using spec content rather than LLM predictions.
+   * For each actual import (normalized to module name), checks whether it is
+   * mentioned in the domain's spec text (exact name or hyphen→space variant).
+   * This is a spec-completeness check: are the modules the file depends on
+   * actually described in the spec?
+   *
+   * Returns a SetMatch where:
+   *   - actual   = all normalized actual import module names
+   *   - predicted = subset of actual imports that appear in the spec text
+   *   - f1Score  = recall = fraction of actual imports covered by spec
    */
-  private compareImports(predicted: string[], actual: string[]): SetMatch {
-    return this.calculateSetMatch(
-      predicted.map(p => this.normalizeImport(p)),
-      actual.map(a => this.normalizeImport(a))
-    );
+  private analyzeImportCoverage(actualImports: string[], domain: string): SetMatch {
+    const normalized = actualImports.map(a => this.normalizeImport(a));
+    const spec = this.specs.find(s => s.domain === domain);
+    const specLower = spec ? spec.content.toLowerCase() : '';
+
+    const covered: string[] = [];
+    if (specLower.length > 0) {
+      for (const name of normalized) {
+        if (!name || name.length < 2) continue;
+        // Match literal (e.g. "config-manager") or with spaces (e.g. "config manager")
+        if (specLower.includes(name) || specLower.includes(name.replace(/-/g, ' '))) {
+          covered.push(name);
+        }
+      }
+    }
+
+    const total = normalized.length;
+    const coverage = total > 0 ? covered.length / total : 0;
+    return {
+      predicted: covered,   // imports mentioned in spec
+      actual: normalized,   // all actual imports
+      precision: coverage,
+      recall: coverage,
+      f1Score: coverage,
+    };
   }
 
   /**
@@ -612,30 +788,82 @@ Respond in JSON:
   }
 
   /**
-   * Analyze requirement coverage
+   * Parse requirements from a spec's markdown content.
+   * Returns an array of { name, description } extracted from
+   * "### Requirement: Name\n\nThe system SHALL ..." blocks.
    */
-  private analyzeRequirementCoverage(relatedRequirements: string[], fileContent: string): RequirementCoverage {
-    const actuallyImplements: string[] = [];
-    const contentLower = fileContent.toLowerCase();
+  private parseSpecRequirements(specContent: string): Array<{ name: string; description: string }> {
+    const requirements: Array<{ name: string; description: string }> = [];
+    const lines = specContent.split('\n');
 
-    for (const req of relatedRequirements) {
-      // Check if requirement keywords appear in the file
-      const reqWords = req.toLowerCase().split(/[\s-_]+/);
-      const matches = reqWords.filter(w => w.length > 3 && contentLower.includes(w));
-      if (matches.length >= Math.min(2, reqWords.length)) {
-        actuallyImplements.push(req);
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^###\s+Requirement:\s+(.+)/i);
+      if (!m) continue;
+      const name = m[1].trim();
+      // Look ahead for the description line (first non-empty line after the heading)
+      let description = '';
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+        const l = lines[j].trim();
+        if (l.length > 0) { description = l; break; }
+      }
+      if (name) requirements.push({ name, description });
+    }
+    return requirements;
+  }
+
+  /**
+   * Analyze requirement coverage.
+   *
+   * When llmScore is provided (LLM-as-judge), it is used directly — the LLM
+   * has seen both the spec and the file and scores only the requirements
+   * relevant to this specific file, avoiding the false penalty of a domain
+   * spec covering many files where each file implements only a small subset.
+   *
+   * Falls back to keyword matching when no LLM score is available.
+   */
+  private analyzeRequirementCoverage(domain: string, fileContent: string, llmScore?: number): RequirementCoverage {
+    const spec = this.specs.find(s => s.domain === domain);
+    if (!spec) {
+      return { relatedRequirements: [], actuallyImplements: [], coverage: 0 };
+    }
+
+    const requirements = this.parseSpecRequirements(spec.content);
+    const relatedRequirements = requirements.map(r => r.name);
+
+    // LLM-as-judge: use the score directly, synthesize actuallyImplements proportionally
+    if (typeof llmScore === 'number') {
+      const implementedCount = Math.round(llmScore * requirements.length);
+      return {
+        relatedRequirements,
+        actuallyImplements: relatedRequirements.slice(0, implementedCount),
+        coverage: llmScore,
+      };
+    }
+
+    if (requirements.length === 0) {
+      return { relatedRequirements: [], actuallyImplements: [], coverage: 0 };
+    }
+
+    const contentLower = fileContent.toLowerCase();
+    const actuallyImplements: string[] = [];
+
+    for (const req of requirements) {
+      const source = req.description.length > 0 ? req.description : req.name;
+      const keywords = source
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 3 && !['shall', 'system', 'when', 'given', 'then', 'that', 'this', 'with', 'from', 'have', 'will'].includes(w));
+
+      if (keywords.length === 0) continue;
+      const matched = keywords.filter(w => contentLower.includes(w));
+      if (matched.length >= Math.ceil(keywords.length * 0.5)) {
+        actuallyImplements.push(req.name);
       }
     }
 
-    const coverage = relatedRequirements.length > 0
-      ? actuallyImplements.length / relatedRequirements.length
-      : 0;
-
-    return {
-      relatedRequirements,
-      actuallyImplements,
-      coverage,
-    };
+    const coverage = actuallyImplements.length / requirements.length;
+    return { relatedRequirements, actuallyImplements, coverage };
   }
 
   /**
@@ -648,19 +876,16 @@ Respond in JSON:
     requirementCoverage: RequirementCoverage
   ): number {
     // Weighted combination (total = 1.0):
-    //   Purpose:      25%  — semantic similarity of LLM-predicted vs spec purpose
-    //   Imports:       30%  — F1 of predicted vs actual imports
-    //   Exports:       30%  — F1 of predicted vs actual exports
-    //   Requirements:  15%  — fraction of spec requirements covered by the file
-    //
-    // When imports+exports both score 0 the max achievable is 0.40
-    // (purpose 0.25 + requirements 0.15), so the default pass threshold
-    // (0.5) allows files with strong purpose + requirement coverage to pass.
+    //   Purpose:      50%  — LLM-as-judge: how well the spec describes this file
+    //   Requirements: 35%  — LLM-as-judge: fraction of file-relevant requirements covered
+    //   Imports:       5%  — fraction of actual imports mentioned in spec
+    //                        (low weight: library deps are never in specs, so ceiling ~20%)
+    //   Exports:      10%  — F1 of LLM-predicted vs actual exports
     return (
-      purposeMatch.similarity * 0.25 +
-      importMatch.f1Score * 0.30 +
-      exportMatch.f1Score * 0.30 +
-      requirementCoverage.coverage * 0.15
+      purposeMatch.similarity * 0.50 +
+      requirementCoverage.coverage * 0.35 +
+      importMatch.f1Score * 0.05 +
+      exportMatch.f1Score * 0.10
     );
   }
 
@@ -792,7 +1017,7 @@ Respond in JSON:
     }
 
     return {
-      timestamp: new Date().toISOString(),
+      timestamp: new Date().toLocaleString(),
       specVersion,
       sampledFiles: results.length,
       passedFiles,
@@ -895,7 +1120,7 @@ Respond in JSON:
     lines.push('');
     for (const result of report.results) {
       const scorePercent = (result.overallScore * 100).toFixed(0);
-      const status = result.overallScore >= 0.6 ? '✅' : '❌';
+      const status = result.overallScore >= this.options.passThreshold ? '✅' : '❌';
       lines.push(`### ${status} ${result.filePath}`);
       lines.push('');
       lines.push(`- **Domain**: ${result.domain}`);

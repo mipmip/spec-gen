@@ -72,7 +72,7 @@ const MAX_NEAR_FUNCTIONS = 400;
 
 // ============================================================================
 // KEYWORD SET (Type 2 normalization — preserve keywords, replace identifiers)
-// Covers TypeScript, JavaScript, Python, Go, Rust, Ruby, Java.
+// Covers TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, Swift.
 // ============================================================================
 
 const KEYWORDS = new Set([
@@ -105,6 +105,12 @@ const KEYWORDS = new Set([
   'end', 'then', 'do', 'defined',
   // Java extras
   'throws', 'instanceof',
+  // Swift extras
+  'guard', 'defer', 'repeat', 'fallthrough', 'inout', 'typealias', 'associatedtype',
+  'fileprivate', 'open', 'indirect', 'lazy', 'weak', 'unowned', 'convenience',
+  'required', 'override', 'prefix', 'postfix', 'infix', 'operator', 'precedencegroup',
+  'some', 'any', 'actor', 'nonisolated', 'isolated', 'async', 'throws', 'rethrows',
+  'Protocol', 'Type', 'init', 'deinit', 'subscript', 'willSet', 'didSet', 'get', 'set',
   // C++ extras
   'nullptr', 'constexpr', 'consteval', 'constinit', 'inline', 'extern',
   'friend', 'mutable', 'explicit', 'noexcept', 'typename', 'operator',

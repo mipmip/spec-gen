@@ -201,7 +201,7 @@ export function createUserService(): UserService {
   });
 
   describe('selectCandidates', () => {
-    it('should select files within complexity range', () => {
+    it('should select files within complexity range', async () => {
       const engine = new SpecVerificationEngine(llmService, {
         rootPath: testDir,
         openspecPath: openspecDir,
@@ -209,41 +209,43 @@ export function createUserService(): UserService {
         minComplexity: 50,
         maxComplexity: 200,
       });
+      await (engine as any).loadSpecs();
 
       const depGraph = createMockDepGraph([
-        { path: 'src/small.ts', lines: 20 },  // Too small
-        { path: 'src/medium.ts', lines: 100 }, // Good
-        { path: 'src/large.ts', lines: 500 },  // Too large
-        { path: 'src/good.ts', lines: 150 },   // Good
+        { path: 'src/user/small.ts', lines: 20 },  // Too small
+        { path: 'src/user/medium.ts', lines: 100 }, // Good
+        { path: 'src/user/large.ts', lines: 500 },  // Too large
+        { path: 'src/user/good.ts', lines: 150 },   // Good
       ]);
 
       const candidates = engine.selectCandidates(depGraph);
 
       // Should only include medium and good files
       expect(candidates.length).toBe(2);
-      expect(candidates.map(c => c.path)).toContain('src/medium.ts');
-      expect(candidates.map(c => c.path)).toContain('src/good.ts');
+      expect(candidates.map(c => c.path)).toContain('src/user/medium.ts');
+      expect(candidates.map(c => c.path)).toContain('src/user/good.ts');
     });
 
-    it('should exclude files used in generation', () => {
+    it('should exclude files used in generation', async () => {
       const engine = new SpecVerificationEngine(llmService, {
         rootPath: testDir,
         openspecPath: openspecDir,
         outputDir,
         minComplexity: 50,
         maxComplexity: 200,
-        generationContext: ['src/used.ts'],
+        generationContext: ['src/user/used.ts'],
       });
+      await (engine as any).loadSpecs();
 
       const depGraph = createMockDepGraph([
-        { path: 'src/used.ts', lines: 100 },
-        { path: 'src/unused.ts', lines: 100 },
+        { path: 'src/user/used.ts', lines: 100 },
+        { path: 'src/user/unused.ts', lines: 100 },
       ]);
 
       const candidates = engine.selectCandidates(depGraph);
 
       expect(candidates.length).toBe(1);
-      expect(candidates[0].path).toBe('src/unused.ts');
+      expect(candidates[0].path).toBe('src/user/unused.ts');
     });
 
     it('should exclude test files', () => {
@@ -301,6 +303,8 @@ export function createUserService(): UserService {
         predictedLogic: ['authenticate with email/password', 'update profile'],
         relatedRequirements: ['UserAuthentication', 'UserProfile'],
         confidence: 0.8,
+        specAccuracyScore: 0.85,
+        requirementCoverageScore: 0.75,
         reasoning: 'The user spec clearly describes these operations',
       }));
 
@@ -332,11 +336,53 @@ export function createUserService(): UserService {
       expect(result.overallScore).toBeGreaterThanOrEqual(0);
       expect(result.overallScore).toBeLessThanOrEqual(1);
       expect(result.llmConfidence).toBe(0.8);
+      // LLM-as-judge: specAccuracyScore (0.85) → purposeMatch.similarity
+      expect(result.purposeMatch.similarity).toBe(0.85);
+      // LLM-as-judge: requirementCoverageScore (0.75) → requirementCoverage.coverage
+      expect(result.requirementCoverage.coverage).toBe(0.75);
+    });
+
+    it('should fall back to Jaccard similarity when specAccuracyScore is absent', async () => {
+      mockProvider.setDefaultResponse(JSON.stringify({
+        predictedPurpose: 'Handles user authentication and profile management',
+        predictedImports: ['database'],
+        predictedExports: ['UserService'],
+        predictedLogic: [],
+        relatedRequirements: [],
+        confidence: 0.7,
+        reasoning: 'no specAccuracyScore in this response',
+      }));
+
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+      await (engine as any).loadSpecs();
+
+      const candidate: VerificationCandidate = {
+        path: 'src/user-service.ts',
+        absolutePath: join(srcDir, 'user-service.ts'),
+        domain: 'user',
+        usedInGeneration: false,
+        complexity: 100,
+        lines: 30,
+        imports: 2,
+        exports: 3,
+      };
+
+      const result = await (engine as any).verifyFile(candidate);
+
+      // Falls back to Jaccard — score will be some value in [0,1]
+      expect(result.purposeMatch.similarity).toBeGreaterThanOrEqual(0);
+      expect(result.purposeMatch.similarity).toBeLessThanOrEqual(1);
+      // But it must NOT be 0.85 (the LLM-as-judge value from the other test)
+      expect(result.purposeMatch.similarity).not.toBe(0.85);
     });
   });
 
   describe('comparePurpose', () => {
-    it('should calculate similarity between purposes', () => {
+    it('should calculate similarity between purposes via Jaccard when no score provided', () => {
       const engine = new SpecVerificationEngine(llmService, {
         rootPath: testDir,
         openspecPath: openspecDir,
@@ -351,6 +397,23 @@ export function createUserService(): UserService {
       expect(result.predicted).toBe('Handles user authentication');
       expect(result.actual).toContain('authentication');
       expect(result.similarity).toBeGreaterThan(0);
+    });
+
+    it('should use specAccuracyScore directly when provided (LLM-as-judge)', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      const result = (engine as any).comparePurpose(
+        'Handles user authentication',
+        '// Something completely different',
+        0.92
+      );
+
+      // specAccuracyScore takes precedence over Jaccard
+      expect(result.similarity).toBe(0.92);
     });
   });
 
@@ -389,6 +452,122 @@ export function login() {}`;
       const purpose = (engine as any).extractPurpose(content);
 
       expect(purpose).toContain('user login');
+    });
+
+    // Fix 2: JSDoc blocks that start after line 30 must still be found.
+    it('should extract purpose from JSDoc that starts after line 30', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      // 35 import lines, then the JSDoc block
+      const imports = Array.from({ length: 35 }, (_, i) => `import { m${i} } from './mod${i}.js';`).join('\n');
+      const content = `${imports}
+
+/**
+ * Payment Service
+ *
+ * Processes payment transactions and manages billing.
+ */
+export class PaymentService {}`;
+
+      const purpose = (engine as any).extractPurpose(content);
+
+      expect(purpose).toContain('Payment Service');
+      expect(purpose).toContain('payment');
+    });
+
+    it('should extract identifier words when there are no comments', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      const content = `export class Foo {}\nexport function bar() {}`;
+      const purpose = (engine as any).extractPurpose(content);
+
+      // Now extracts identifier words even without comments
+      expect(purpose).toContain('foo');
+      expect(purpose).toContain('bar');
+    });
+  });
+
+  describe('analyzeImportCoverage', () => {
+    it('should detect imports mentioned in spec', async () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+      await (engine as any).loadSpecs();
+
+      // The 'user' spec mentions "authentication" and "profile"
+      // Use module names that appear literally in the spec text
+      const result = (engine as any).analyzeImportCoverage(
+        ['./authentication.js', './utils/crypto.js', './totally-unknown-xyz.js'],
+        'user'
+      );
+
+      // 'authentication' appears in the user spec (purpose + requirement description)
+      // 'crypto' and 'totally-unknown-xyz' don't appear in the spec
+      expect(result.actual).toEqual(['authentication', 'crypto', 'totally-unknown-xyz']);
+      expect(result.f1Score).toBeGreaterThanOrEqual(0);
+      expect(result.f1Score).toBeLessThanOrEqual(1);
+      // 'authentication' should be covered (spec mentions "authentication")
+      expect(result.predicted).toContain('authentication');
+      // non-matching modules should not be covered
+      expect(result.predicted).not.toContain('totally-unknown-xyz');
+    });
+
+    it('should return zero coverage when no imports match spec', async () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+      await (engine as any).loadSpecs();
+
+      const result = (engine as any).analyzeImportCoverage(
+        ['./xyz-totally-unknown.js', './another-unknown.js'],
+        'user'
+      );
+
+      expect(result.f1Score).toBe(0);
+      expect(result.predicted).toEqual([]);
+    });
+
+    it('should return zero coverage for unknown domain', async () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+      await (engine as any).loadSpecs();
+
+      const result = (engine as any).analyzeImportCoverage(
+        ['./database.js'],
+        'nonexistent-domain'
+      );
+
+      expect(result.f1Score).toBe(0);
+    });
+
+    it('should handle empty imports list', async () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+      await (engine as any).loadSpecs();
+
+      const result = (engine as any).analyzeImportCoverage([], 'user');
+
+      expect(result.f1Score).toBe(0);
+      expect(result.actual).toEqual([]);
+      expect(result.predicted).toEqual([]);
     });
   });
 
@@ -454,10 +633,10 @@ export function login() {}`;
       });
 
       const score = (engine as any).calculateOverallScore(
-        { similarity: 1.0 },           // 25%
-        { f1Score: 1.0 },              // 30%
-        { f1Score: 1.0 },              // 30%
-        { coverage: 1.0 }              // 15%
+        { similarity: 1.0 },
+        { f1Score: 1.0 },
+        { f1Score: 1.0 },
+        { coverage: 1.0 }
       );
 
       expect(score).toBe(1.0);
@@ -470,6 +649,96 @@ export function login() {}`;
       );
 
       expect(zeroScore).toBe(0);
+    });
+
+    // Weights: purpose 50%, requirements 35%, exports 10%, imports 5%.
+    // Each sub-score is isolated to confirm its exact contribution.
+    it('should apply purpose weight of 50%', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      const score = (engine as any).calculateOverallScore(
+        { similarity: 1.0 },
+        { f1Score: 0 },
+        { f1Score: 0 },
+        { coverage: 0 }
+      );
+
+      expect(score).toBeCloseTo(0.50, 5);
+    });
+
+    it('should apply imports weight of 5%', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      const score = (engine as any).calculateOverallScore(
+        { similarity: 0 },
+        { f1Score: 1.0 },
+        { f1Score: 0 },
+        { coverage: 0 }
+      );
+
+      expect(score).toBeCloseTo(0.05, 5);
+    });
+
+    it('should apply requirements weight of 35%', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      const score = (engine as any).calculateOverallScore(
+        { similarity: 0 },
+        { f1Score: 0 },
+        { f1Score: 0 },
+        { coverage: 1.0 }
+      );
+
+      expect(score).toBeCloseTo(0.35, 5);
+    });
+
+    it('should apply export weight of 10%', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      const score = (engine as any).calculateOverallScore(
+        { similarity: 0 },
+        { f1Score: 0 },
+        { f1Score: 1.0 },
+        { coverage: 0 }
+      );
+
+      expect(score).toBeCloseTo(0.10, 5);
+    });
+
+    it('should allow passing with all dimensions contributing', () => {
+      // With purpose=1, imports=1, exports=0, requirements=1: 0.50+0.05+0+0.35 = 0.90
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+        passThreshold: 0.5,
+      });
+
+      const score = (engine as any).calculateOverallScore(
+        { similarity: 1.0 },
+        { f1Score: 1.0 },
+        { f1Score: 0 },
+        { coverage: 1.0 }
+      );
+
+      expect(score).toBeCloseTo(0.90, 5);
+      expect(score).toBeGreaterThan(0.5); // should pass
     });
   });
 
@@ -575,6 +844,165 @@ export function login() {}`;
     });
   });
 
+  // Fix 3: LLM failure must cause the file to be skipped, not recorded as 0%.
+  describe('verifyFile — LLM failure handling', () => {
+    it('should throw when LLM prediction fails so verify() skips the file', async () => {
+      mockProvider.setDefaultResponse('INVALID JSON {{{');
+
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      await (engine as any).loadSpecs();
+
+      const candidate: VerificationCandidate = {
+        path: 'src/user-service.ts',
+        absolutePath: join(srcDir, 'user-service.ts'),
+        domain: 'user',
+        usedInGeneration: false,
+        complexity: 100,
+        lines: 30,
+        imports: 2,
+        exports: 3,
+      };
+
+      await expect((engine as any).verifyFile(candidate)).rejects.toThrow();
+    });
+
+    it('should skip all failed files and report sampledFiles as 0', async () => {
+      // Malformed JSON causes a non-retryable parse error in completeJSON
+      mockProvider.setDefaultResponse('NOT VALID JSON {{{');
+
+      const depGraph = createMockDepGraph([
+        { path: 'src/user-service.ts', lines: 100 },
+      ]);
+
+      const report = await verifySpecs(
+        llmService,
+        depGraph,
+        { rootPath: testDir, openspecPath: openspecDir, outputDir, minComplexity: 10, maxComplexity: 200 },
+        '1.0.0'
+      );
+
+      // File was skipped entirely — not recorded as a 0% result
+      expect(report.sampledFiles).toBe(0);
+      expect(report.results).toHaveLength(0);
+    });
+  });
+
+  // Fix 4: selectCandidates should prefer high-connectivity (core) files over leaf nodes.
+  describe('selectCandidates — sort order', () => {
+    it('should prefer high-connectivity files over leaf nodes', async () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+        minComplexity: 50,
+        maxComplexity: 500,
+        filesPerDomain: 1,
+      });
+      await (engine as any).loadSpecs();
+
+      const depGraph = createMockDepGraph([
+        { path: 'src/user/leaf.ts', lines: 100 },
+        { path: 'src/user/core.ts', lines: 100 },
+      ]);
+
+      // leaf: connectivity 1, core: connectivity 10
+      depGraph.nodes[0].metrics.inDegree = 0;
+      depGraph.nodes[0].metrics.outDegree = 1;
+      depGraph.nodes[1].metrics.inDegree = 6;
+      depGraph.nodes[1].metrics.outDegree = 4;
+
+      const candidates = engine.selectCandidates(depGraph);
+
+      expect(candidates.length).toBe(1);
+      expect(candidates[0].path).toBe('src/user/core.ts');
+    });
+  });
+
+  // Fix 5: buildSpecsContext must truncate when total content exceeds maxChars.
+  describe('buildSpecsContext', () => {
+    it('should include all specs when content fits within budget', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      // Inject two small specs directly
+      (engine as any).specs = [
+        { domain: 'alpha', path: 'openspec/specs/alpha/spec.md', content: 'Alpha content' },
+        { domain: 'beta',  path: 'openspec/specs/beta/spec.md',  content: 'Beta content' },
+      ];
+
+      const result = (engine as any).buildSpecsContext(10_000);
+
+      expect(result).toContain('=== alpha');
+      expect(result).toContain('Alpha content');
+      expect(result).toContain('=== beta');
+      expect(result).toContain('Beta content');
+    });
+
+    it('should truncate specs that exceed the char budget', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      const bigContent = 'x'.repeat(500);
+      (engine as any).specs = [
+        { domain: 'alpha', path: 'openspec/specs/alpha/spec.md', content: bigContent },
+        { domain: 'beta',  path: 'openspec/specs/beta/spec.md',  content: bigContent },
+      ];
+
+      // Budget only large enough for the first spec header + a slice of its content
+      const result = (engine as any).buildSpecsContext(200);
+
+      expect(result).toContain('=== alpha');
+      expect(result).toContain('[truncated]');
+      // Beta should be dropped entirely
+      expect(result).not.toContain('=== beta');
+    });
+
+    it('should stop adding specs once the budget is exhausted', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      (engine as any).specs = [
+        { domain: 'a', path: 'openspec/specs/a/spec.md', content: 'x'.repeat(100) },
+        { domain: 'b', path: 'openspec/specs/b/spec.md', content: 'y'.repeat(100) },
+        { domain: 'c', path: 'openspec/specs/c/spec.md', content: 'z'.repeat(100) },
+      ];
+
+      // Only enough room for the first spec
+      const result = (engine as any).buildSpecsContext(60);
+
+      expect(result).toContain('=== a');
+      expect(result).not.toContain('=== b');
+      expect(result).not.toContain('=== c');
+    });
+
+    it('should return empty string when specs list is empty', () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+
+      (engine as any).specs = [];
+      const result = (engine as any).buildSpecsContext(24_000);
+
+      expect(result).toBe('');
+    });
+  });
+
   describe('verifySpecs convenience function', () => {
     it('should run verification end-to-end', async () => {
       mockProvider.setDefaultResponse(JSON.stringify({
@@ -611,27 +1039,50 @@ export function login() {}`;
   });
 
   describe('inferDomain', () => {
-    it('should infer domain from file path', () => {
+    it('should match against loaded spec domains', async () => {
       const engine = new SpecVerificationEngine(llmService, {
         rootPath: testDir,
         openspecPath: openspecDir,
         outputDir,
       });
+      // Load specs so knownDomains is populated (only 'user' spec exists in test setup)
+      await (engine as any).loadSpecs();
 
+      // 'user' is a known spec domain — should match exactly
       expect((engine as any).inferDomain('src/user/service.ts')).toBe('user');
-      expect((engine as any).inferDomain('src/services/order-service.ts')).toBe('services');
-      expect((engine as any).inferDomain('lib/auth/provider.ts')).toBe('auth');
+      expect((engine as any).inferDomain('src/core/user/model.ts')).toBe('user');
     });
 
-    it('should skip common non-domain directories', () => {
+    it('should prefer the deepest matching segment (most specific domain)', async () => {
+      // Create a second spec so both 'user' and 'services' are known domains
+      const servicesSpecDir = join(openspecDir, 'specs', 'services');
+      await mkdir(servicesSpecDir, { recursive: true });
+      await writeFile(join(servicesSpecDir, 'spec.md'), '# Services Spec\n');
+
       const engine = new SpecVerificationEngine(llmService, {
         rootPath: testDir,
         openspecPath: openspecDir,
         outputDir,
       });
+      await (engine as any).loadSpecs();
 
-      expect((engine as any).inferDomain('src/lib/auth/provider.ts')).toBe('auth');
-      expect((engine as any).inferDomain('src/core/user/model.ts')).toBe('user');
+      // src/core/services/user/model.ts — both 'services' and 'user' are known domains
+      // deepest match (rightmost directory) wins → 'user'
+      expect((engine as any).inferDomain('src/core/services/user/model.ts')).toBe('user');
+    });
+
+    it('should return misc for paths that match no known spec domain', async () => {
+      const engine = new SpecVerificationEngine(llmService, {
+        rootPath: testDir,
+        openspecPath: openspecDir,
+        outputDir,
+      });
+      await (engine as any).loadSpecs();
+
+      // 'services', 'auth' are not in the test spec set — should not invent phantom domains
+      expect((engine as any).inferDomain('src/services/order-service.ts')).toBe('misc');
+      expect((engine as any).inferDomain('lib/auth/provider.ts')).toBe('misc');
+      expect((engine as any).inferDomain('src/utils/command-helpers.ts')).toBe('misc');
     });
   });
 

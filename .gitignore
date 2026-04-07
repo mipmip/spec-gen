@@ -17,6 +17,7 @@ Thumbs.db
 .claude
 .spec-gen/
 .mcp.json
+.cursor/
 
 # --------------------
 # Python Specific

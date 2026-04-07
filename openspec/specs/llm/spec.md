@@ -307,6 +307,44 @@ The system SHALL return the maximum context window size for the configured model
 - **WHEN** the operation is invoked
 - **THEN** the expected outcome occurs
 
+### Requirement: CursorAgentCliProvider
+
+The system SHALL provide an LLM provider identified as `cursor-agent` that implements `LLMProvider`, invokes the Cursor Agent CLI in non-interactive print mode to obtain completions, and returns a normalized `CompletionResponse`.
+
+The implementation SHALL:
+
+- Combine `systemPrompt` and `userPrompt` into a single prompt when both are present (consistent with other CLI providers in this codebase).
+- Resolve the CLI executable path from an environment variable (e.g. override for non-standard installs) with a documented default binary name.
+- Pass arguments appropriate for structured output (e.g. print mode and JSON output format) so the stdout can be parsed deterministically when the CLI supports it.
+- On CLI failure (non-zero exit, stderr/stdout error detail), throw an error marked non-retryable where that pattern is used for other CLI providers.
+- When token usage is not present in CLI output, SHALL derive input/output token estimates using the same estimation approach as other CLI providers.
+
+#### Scenario: SuccessfulCompletion
+
+- **WHEN** a valid `CompletionRequest` is provided and the Cursor Agent CLI returns successful structured output containing the assistant text
+- **THEN** `generateCompletion` returns a `CompletionResponse` whose `content` is that text and whose `usage` contains non-negative token counts and a `totalTokens` equal to the sum of input and output tokens
+
+#### Scenario: CliProcessFailure
+
+- **WHEN** the Cursor Agent CLI exits with an error or returns output that cannot be parsed as expected
+- **THEN** `generateCompletion` throws an error that surfaces CLI diagnostics and does not return a successful `CompletionResponse`
+
+### Requirement: CursorAgentProviderRegistration
+
+The system SHALL register the `cursor-agent` provider in the LLM service factory such that `createLLMService({ provider: 'cursor-agent', ... })` instantiates the Cursor Agent CLI-backed provider without requiring `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPAT_API_KEY`, or `GEMINI_API_KEY`.
+
+The system SHALL include `cursor-agent` in provider pricing lookup with zero per-token estimated cost for cost estimation purposes (same class as other subscription or local CLI providers).
+
+#### Scenario: FactorySelectsCursorAgent
+
+- **WHEN** `createLLMService` is called with `provider: 'cursor-agent'`
+- **THEN** the underlying provider’s `name` is `cursor-agent` and no cloud API key environment variable is read for instantiation
+
+#### Scenario: CostLookupCliProvider
+
+- **WHEN** `lookupPricing` is called for provider `cursor-agent` and any model identifier
+- **THEN** returned input and output per-million token rates are zero
+
 ## Technical Notes
 
 - **Implementation**: `src/core/services/llm-service.ts`

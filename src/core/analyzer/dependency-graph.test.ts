@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   buildDependencyGraph,
+  injectCallGraphEdges,
   toD3Format,
   toMermaidFormat,
   toDotFormat,
@@ -987,6 +988,70 @@ export function d() {}
       }
       // structuralClusterCount matches
       expect(result.statistics.structuralClusterCount).toBe(result.structuralClusters.length);
+    });
+
+    it('injectCallGraphEdges adds cross-file call edges to a dep graph with no import edges', async () => {
+      const fileA = await createFile(tempDir, 'Sources/ViewA.swift', 'func foo() {}');
+      const fileB = await createFile(tempDir, 'Sources/ViewB.swift', 'func bar() {}');
+      const files = [
+        createScoredFile({ absolutePath: fileA, name: 'ViewA.swift', extension: '.swift', directory: 'Sources' }),
+        createScoredFile({ absolutePath: fileB, name: 'ViewB.swift', extension: '.swift', directory: 'Sources' }),
+      ];
+      const depGraph = await buildDependencyGraph(files, { rootDir: tempDir });
+      expect(depGraph.statistics.edgeCount).toBe(0);
+
+      // Simulate a cross-file call: foo (in ViewA) calls bar (in ViewB)
+      const fooId = `${fileA}::foo`;
+      const barId = `${fileB}::bar`;
+      injectCallGraphEdges(
+        depGraph,
+        [{ callerId: fooId, calleeId: barId }],
+        id => (id === fooId ? fileA : id === barId ? fileB : undefined),
+      );
+
+      expect(depGraph.statistics.edgeCount).toBe(1);
+      expect(depGraph.edges).toHaveLength(1);
+      expect(depGraph.edges[0].source).toBe(fileA);
+      expect(depGraph.edges[0].target).toBe(fileB);
+      expect(depGraph.statistics.avgDegree).toBeGreaterThan(0);
+    });
+
+    it('injectCallGraphEdges deduplicates multiple calls between the same two files', async () => {
+      const fileA = await createFile(tempDir, 'Sources/A2.swift', '');
+      const fileB = await createFile(tempDir, 'Sources/B2.swift', '');
+      const files = [
+        createScoredFile({ absolutePath: fileA, name: 'A2.swift', extension: '.swift', directory: 'Sources' }),
+        createScoredFile({ absolutePath: fileB, name: 'B2.swift', extension: '.swift', directory: 'Sources' }),
+      ];
+      const depGraph = await buildDependencyGraph(files, { rootDir: tempDir });
+
+      const id = (file: string, fn: string) => `${file}::${fn}`;
+      injectCallGraphEdges(
+        depGraph,
+        [
+          { callerId: id(fileA, 'foo'), calleeId: id(fileB, 'bar') },
+          { callerId: id(fileA, 'baz'), calleeId: id(fileB, 'bar') }, // same A→B pair
+        ],
+        (nodeId) => (nodeId.startsWith(fileA) ? fileA : nodeId.startsWith(fileB) ? fileB : undefined),
+      );
+
+      expect(depGraph.statistics.edgeCount).toBe(1); // deduplicated
+    });
+
+    it('injectCallGraphEdges ignores intra-file calls', async () => {
+      const fileA = await createFile(tempDir, 'Sources/A3.swift', '');
+      const files = [
+        createScoredFile({ absolutePath: fileA, name: 'A3.swift', extension: '.swift', directory: 'Sources' }),
+      ];
+      const depGraph = await buildDependencyGraph(files, { rootDir: tempDir });
+
+      injectCallGraphEdges(
+        depGraph,
+        [{ callerId: `${fileA}::foo`, calleeId: `${fileA}::bar` }],
+        () => fileA,
+      );
+
+      expect(depGraph.statistics.edgeCount).toBe(0);
     });
 
     it('structuralClusters should be empty when no files share a directory with internal edges', async () => {

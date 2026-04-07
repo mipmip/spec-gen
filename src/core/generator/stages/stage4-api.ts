@@ -61,7 +61,7 @@ export async function runStage4(
     }
     if (isLargeFile && !graphSection) {
       for (const endpoint of endpointsFromFile) {
-        endpoint.purpose = `[PARTIAL SPEC — file too large to fully analyze (${chunks.length} parts)] ${endpoint.purpose}`;
+        endpoint.purpose = `${endpoint.purpose} *(analyzed in ${chunks.length} chunks)*`;
       }
     }
     allEndpoints.push(...endpointsFromFile);

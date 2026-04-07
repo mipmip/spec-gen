@@ -107,7 +107,7 @@ export interface AnalyzeResult {
 
 export interface GenerateApiOptions extends BaseOptions {
   /** LLM provider to use */
-  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'gemini';
+  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'gemini-cli' | 'claude-code' | 'mistral-vibe' | 'cursor-agent';
   /** LLM model name */
   model?: string;
   /** Custom LLM API base URL */
@@ -130,6 +130,8 @@ export interface GenerateApiOptions extends BaseOptions {
   dryRun?: boolean;
   /** Path to analysis directory. Default: '.spec-gen/analysis/' */
   analysisPath?: string;
+  /** Force regeneration from scratch, ignoring any cached stage results on disk */
+  force?: boolean;
 }
 
 export interface GenerateResult {
@@ -144,7 +146,7 @@ export interface GenerateResult {
 
 export interface VerifyApiOptions extends BaseOptions {
   /** LLM provider to use */
-  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'gemini';
+  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'gemini-cli' | 'claude-code' | 'mistral-vibe' | 'cursor-agent';
   /** LLM model name */
   model?: string;
   /** Custom LLM API base URL */
@@ -180,7 +182,7 @@ export interface DriftApiOptions extends BaseOptions {
   /** Use LLM for deeper semantic comparison */
   llmEnhanced?: boolean;
   /** LLM provider (required if llmEnhanced is true) */
-  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'gemini';
+  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'gemini-cli' | 'claude-code' | 'mistral-vibe' | 'cursor-agent';
   /** LLM model name (used when llmEnhanced is true) */
   model?: string;
   /** Custom LLM API base URL */
@@ -207,7 +209,7 @@ export interface RunApiOptions extends BaseOptions {
   /** Force fresh analysis even if recent exists */
   reanalyze?: boolean;
   /** LLM provider to use */
-  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'gemini';
+  provider?: 'anthropic' | 'openai' | 'openai-compat' | 'copilot' | 'gemini' | 'gemini-cli' | 'claude-code' | 'mistral-vibe' | 'cursor-agent';
   /** LLM model name */
   model?: string;
   /** Custom LLM API base URL */
@@ -230,3 +232,18 @@ export interface RunResult {
   generation: GenerateResult;
   duration: number;
 }
+
+// ============================================================================
+// AUDIT
+// ============================================================================
+
+export interface AuditApiOptions extends BaseOptions {
+  /** Maximum uncovered functions to include in the report. Default: 50 */
+  maxUncovered?: number;
+  /** Minimum fanIn to flag a hub as a gap. Default: 5 */
+  hubThreshold?: number;
+  /** Save audit report to .spec-gen/analysis/audit-report.json. Default: true */
+  save?: boolean;
+}
+
+export type { AuditReport } from '../types/index.js';

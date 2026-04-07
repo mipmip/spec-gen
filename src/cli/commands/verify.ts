@@ -8,7 +8,7 @@
 import { Command } from 'commander';
 import { join } from 'node:path';
 import { logger } from '../../utils/logger.js';
-import { fileExists, formatDuration, parseList, readJsonFile } from '../../utils/command-helpers.js';
+import { fileExists, formatDuration, parseList, readJsonFile, resolveLLMProvider } from '../../utils/command-helpers.js';
 import {
   SPEC_GEN_DIR,
   SPEC_GEN_ANALYSIS_SUBDIR,
@@ -364,22 +364,20 @@ A score >= threshold indicates specs are production-ready.
       // ========================================================================
       // PHASE 2: CHECK LLM API
       // ========================================================================
-      const anthropicKey = process.env.ANTHROPIC_API_KEY;
-      const openaiKey = process.env.OPENAI_API_KEY;
-
-      if (!anthropicKey && !openaiKey) {
+      const resolved = resolveLLMProvider(specGenConfig);
+      if (!resolved) {
         logger.error('No LLM API key found.');
-        logger.discovery('Set ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable.');
+        logger.discovery('Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or OPENAI_COMPAT_API_KEY + OPENAI_COMPAT_BASE_URL.');
         process.exitCode = 1;
         return;
       }
 
-      // Create LLM service (CLI flags > env vars > config file)
-      const provider = anthropicKey ? 'anthropic' : 'openai';
       let llm: LLMService;
       try {
         llm = createLLMService({
-          provider,
+          provider: resolved.provider,
+          model: specGenConfig.generation?.model,
+          openaiCompatBaseUrl: resolved.openaiCompatBaseUrl,
           apiBase: globalOpts.apiBase ?? specGenConfig.llm?.apiBase,
           sslVerify: globalOpts.insecure != null ? !globalOpts.insecure : specGenConfig.llm?.sslVerify ?? true,
           enableLogging: true,

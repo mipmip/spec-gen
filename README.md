@@ -90,9 +90,10 @@ npm run dev
 
 Scans your codebase using pure static analysis:
 - Walks the directory tree, respects .gitignore, scores files by significance
-- Parses imports and exports to build a dependency graph (TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C++)
+- Parses imports and exports to build a dependency graph (TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C++, Swift)
 - Detects HTTP cross-language edges: matches `fetch`/`axios`/`ky`/`got` calls in JS/TS files to FastAPI/Flask/Django route definitions in Python files, creating cross-language dependency edges with `exact`, `path`, or `fuzzy` confidence
 - Resolves Python absolute imports (`from services.retriever import X`) to local files
+- Synthesizes cross-file dependency edges from call-graph data for languages without file-level imports (Swift, C++), so the dependency graph and viewer are meaningful even in single-module projects
 - Clusters related files into structural business domains automatically
 - Extracts DB schema tables (Prisma, TypeORM, Drizzle, SQLAlchemy), HTTP routes (Express, NestJS, Next.js, FastAPI, Flask), UI components (React, Vue, Svelte, Angular), middleware chains, and environment variables — saved as structured JSON artifacts in `.spec-gen/analysis/`
 - Generates AI tool config files (`CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.vibe/skills/`, etc.) with `--ai-configs`
@@ -311,14 +312,19 @@ spec-gen drift --no-color                # Plain output for CI logs
 
 ## LLM Providers
 
-spec-gen supports four providers. The default is Anthropic Claude.
+spec-gen supports nine providers. The default is Anthropic Claude.
 
 | Provider | `provider` value | API key env var | Default model |
 |----------|-----------------|-----------------|---------------|
 | Anthropic Claude | `anthropic` *(default)* | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o` |
 | OpenAI-compatible *(Mistral, Groq, Ollama...)* | `openai-compat` | `OPENAI_COMPAT_API_KEY` | `mistral-large-latest` |
+| GitHub Copilot *(via copilot-api proxy)* | `copilot` | *(none)* | `gpt-4o` |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
+| Gemini CLI | `gemini-cli` | *(none)* | *(CLI default)* |
+| Claude Code | `claude-code` | *(none)* | *(CLI default)* |
+| Mistral Vibe | `mistral-vibe` | *(none)* | *(CLI default)* |
+| Cursor Agent CLI | `cursor-agent` | *(none)* | *(CLI default)* |
 
 ### Selecting a provider
 
@@ -381,6 +387,58 @@ Or in `config.json`:
 Works with: Ollama, LM Studio, Mistral AI, Groq, Together AI, LiteLLM, vLLM,
 text-generation-inference, LocalAI, Azure OpenAI, and any `/v1/chat/completions` server.
 
+### GitHub Copilot (via copilot-api proxy)
+
+Use `provider: "copilot"` to generate specs using your GitHub Copilot subscription via the
+[copilot-api](https://github.com/ericc-ch/copilot-api) proxy, which exposes an OpenAI-compatible
+endpoint from your Copilot credentials.
+
+**Setup:**
+1. Install and start the copilot-api proxy:
+   ```bash
+   npx copilot-api
+   ```
+   By default it listens on `http://localhost:4141`.
+
+2. Configure spec-gen:
+   ```json
+   {
+     "generation": {
+       "provider": "copilot",
+       "model": "gpt-4o",
+       "domains": "auto"
+     }
+   }
+   ```
+
+**Environment variables** (optional):
+```bash
+export COPILOT_API_BASE_URL=http://localhost:4141/v1   # default
+export COPILOT_API_KEY=copilot                         # default, only needed if proxy requires auth
+```
+
+No API key is required — the copilot-api proxy handles authentication via your GitHub Copilot session.
+
+### CLI-based providers (no API key)
+
+Four providers route LLM calls through local CLI tools instead of HTTP APIs. No API key or configuration is needed — just have the CLI installed and on your PATH.
+
+| Provider | CLI binary | Install |
+|----------|-----------|----------------|
+| `claude-code` | `claude` | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (requires Claude Max/Pro subscription) |
+| `gemini-cli` | `gemini` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) (free tier with Google account) |
+| `mistral-vibe` | `vibe` | [Mistral Vibe](https://github.com/mistralai/mistral-vibe) (standalone binary) |
+| `cursor-agent` | `cursor-agent` | [Cursor CLI](https://cursor.com/docs/cli/overview) (Cursor subscription / CLI auth) |
+
+```json
+{
+  "generation": {
+    "provider": "claude-code",
+    "domains": "auto"
+  }
+}
+```
+
 ### Custom base URL for Anthropic or OpenAI
 
 To redirect the built-in Anthropic or OpenAI provider to a proxy or self-hosted endpoint:
@@ -419,11 +477,13 @@ Priority: CLI flags > environment variables > config file > provider defaults.
 | `spec-gen verify` | Verify spec accuracy | Yes |
 | `spec-gen drift` | Detect spec drift (static) | No |
 | `spec-gen drift --use-llm` | Detect spec drift (LLM-enhanced) | Yes |
+| `spec-gen audit` | Report spec coverage gaps: uncovered functions, hub gaps, stale domains | No |
 | `spec-gen run` | Full pipeline: init, analyze, generate | Yes |
 | `spec-gen view` | Launch interactive graph & spec viewer in the browser | No |
 | `spec-gen setup` | Install workflow skills into the project (Vibe, Cline, GSD, BMAD) | No |
 | `spec-gen mcp` | Start MCP server (stdio, for Cline / Claude Code) | No |
 | `spec-gen doctor` | Check environment and configuration for common issues | No |
+| `spec-gen refresh-stories` | Refresh story files with latest structural context after each commit | No |
 
 ### Global Options
 
@@ -620,6 +680,17 @@ Wire the generated digest into your agent's context:
 
 ## spec-gen MCP workflow
 
+| Situation | Tool |
+|-----------|------|
+| Starting any new task | `orient` — returns functions, files, specs, call paths, and insertion points in one call |
+| Don't know which file/function handles a concept | `search_code` |
+| Need call topology across many files | `get_subgraph` / `analyze_impact` |
+| Planning where to add a feature | `suggest_insertion_points` |
+| Reading a spec before writing code | `get_spec` |
+| Checking if code still matches spec | `check_spec_drift` |
+| Finding spec requirements by meaning | `search_specs` |
+| Checking spec coverage before starting a feature | `audit_spec_coverage` |
+
 **Follow this sequence for every task:**
 
 1. **`orient "<task description>"`** — always start here. Returns relevant functions, files, spec domains, call paths, and insertion points in one call.
@@ -805,6 +876,9 @@ All tools run on **pure static analysis** -- no LLM quota consumed.
 | Tool | Description | Requires prior analysis |
 |------|-------------|:---:|
 | `analyze_codebase` | Run full static analysis: repo structure, dependency graph, call graph (hub functions, entry points, layer violations), and top refactoring priorities. Results cached for 1 hour (`force: true` to bypass). | No |
+| `get_call_graph` | Hub functions (high fan-in), entry points (no internal callers), and architectural layer violations. Supports TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C++, Swift. | Yes |
+| `get_signatures` | Compact function/class signatures per file. Filter by path substring with `filePattern`. Useful for understanding a module's public API without reading full source. | Yes |
+| `get_duplicate_report` | Detect duplicate code: Type 1 (exact clones), Type 2 (structural -- renamed variables), Type 3 (near-clones with Jaccard similarity >= 0.7). Groups sorted by impact. | Yes |
 
 **Explore & Navigate**
 
@@ -854,6 +928,14 @@ All tools run on **pure static analysis** -- no LLM quota consumed.
 | `check_spec_drift` | Detect code changes not reflected in OpenSpec specs. Compares git-changed files against spec coverage maps. Issues: gap / stale / uncovered / orphaned-spec / adr-gap. | Yes (generate) |
 | `search_specs` | Semantic search over OpenSpec specifications to find requirements, design notes, and architecture decisions by meaning. Returns linked source files for graph highlighting. Use this when asked "which spec covers X?" or "where should we implement Z?". Requires a spec index built with `spec-gen analyze` or `--reindex-specs`. | Yes (generate) |
 | `list_spec_domains` | List all OpenSpec domains available in this project. Use this to discover what domains exist before doing a targeted `search_specs` call. | Yes (generate) |
+| `audit_spec_coverage` | Parity audit: uncovered functions (in call graph, no spec), hub gaps (high fan-in + no spec), orphan requirements (spec with no implementation found), and stale domains (source changed after spec). Run before starting a feature to understand coverage health. No LLM required. | Yes (analyze) |
+
+**Story Management**
+
+| Tool | Description | Requires prior analysis |
+|------|-------------|:---:|
+| `generate_change_proposal` | Generate a structured change proposal for a feature: affected functions, risk score, insertion points, spec impact, and a ready-to-use story file. Use during sprint planning or before implementing a non-trivial change. | Yes |
+| `annotate_story` | Annotate an existing story file with structural context: risk score, affected functions, recommended insertion point, and spec domain links. Prepares a story for the dev agent so it can skip the orientation step. | Yes |
 
 ### Parameters
 
@@ -1029,6 +1111,21 @@ domain     string   Filter by domain name (e.g. "auth", "analyzer")
 section    string   Filter by section type: "requirements" | "purpose" | "design" | "architecture" | "entities"
 ```
 
+**`generate_change_proposal`**
+```
+directory     string   Absolute path to the project directory
+description   string   Natural-language description of the change (story, intent, or spec delta)
+slug          string   URL-safe identifier for the proposal (e.g. "add-payment-retry")
+storyContent  string   Optional full story markdown to embed in the proposal
+```
+
+**`annotate_story`**
+```
+directory      string   Absolute path to the project directory
+storyFilePath  string   Path to the story file (relative to project root or absolute)
+description    string   Natural-language summary of the story for structural analysis
+```
+
 ### Typical workflow
 
 **Scenario A -- Initial exploration**
@@ -1069,6 +1166,31 @@ section    string   Filter by section type: "requirements" | "purpose" | "design
 3. check_spec_drift({ directory })                    # verify after implementation
 ```
 
+**Scenario E -- Coverage audit before implementing**
+```
+1. audit_spec_coverage({ directory })
+   # Before writing code: surfaces stale domains, uncovered hub functions,
+   # orphan requirements. 0 LLM calls, ~200ms.
+2. If staleDomains includes your target: spec-gen generate --domains $DOMAIN
+3. If hubGaps includes a function you'll touch: flag it in your risk check
+```
+
+---
+
+## Agentic Workflows
+
+spec-gen integrates with structured agentic workflows so AI agents follow a consistent process: orient → risk check → spec check → implement → drift verify.
+
+| Integration | Description | Location |
+|-------------|-------------|----------|
+| **BMAD** | Brownfield agent workflow with architect + dev agents. Architect annotates stories with risk context at planning time; dev agent uses it to skip orientation on low-risk stories. | `examples/bmad/` |
+| **Mistral Vibe** | Skills for Mistral-powered agents (brainstorm, implement story, debug, plan/execute refactor). Includes small-model constraints (≤50-line edits). | `examples/mistral-vibe/` |
+| **GSD** | Minimal slash commands for `spec-gen orient` and `spec-gen drift` — drop into any agent that supports custom commands. | `examples/gsd/` |
+| **spec-kit** | Extension layer adding structural risk analysis to any existing agent setup. | `examples/spec-kit/` |
+| **Cline** | Workflow markdown files for Cline / Roo Code / Kilocode. Copy to `.clinerules/workflows/`. | `examples/cline-workflows/` |
+
+Each integration ships with a README explaining setup and the step-by-step workflow.
+
 ## Interactive Graph Viewer
 
 `spec-gen view` launches a local React app that visualises your codebase analysis and lets you explore spec requirements side-by-side with the dependency graph.
@@ -1092,9 +1214,11 @@ spec-gen view --spec <path>        # custom spec dir (default: ./openspec/specs/
 
 | View | Description |
 |------|-------------|
-| **Clusters** | Colour-coded architectural clusters with expandable member nodes |
-| **Flat** | Force-directed dependency graph (all nodes) |
+| **Clusters** | Colour-coded architectural clusters with expandable member nodes. Falls back to directory clusters for languages without import edges (Swift, C++) |
+| **Flat** | Force-directed dependency graph (all nodes). Import edges are solid; call edges (Swift/C++ synthesised, or HTTP cross-language) are cyan dashed |
+| **Classes** | Class/struct inheritance and call graph. Nodes coloured by language or connected component; isolated nodes hidden. Component-aware force layout keeps related classes together |
 | **Architecture** | High-level cluster map: role-coloured boxes, inter-cluster dependency arrows |
+| **Classes** | Component-aware force layout of class/struct relationships with coloured groupings |
 
 ### Diagram Chat
 
@@ -1181,13 +1305,15 @@ Static analysis output is stored in `.spec-gen/analysis/`:
 | File | Description |
 |------|-------------|
 | `repo-structure.json` | Project structure and metadata |
-| `dependency-graph.json` | Import/export relationships and HTTP cross-language edges (JS/TS → Python) |
+| `dependency-graph.json` | Import/export relationships, HTTP cross-language edges (JS/TS → Python), and synthesised call edges for Swift/C++ |
 | `llm-context.json` | Context prepared for LLM (signatures, call graph) |
 | `dependencies.mermaid` | Visual dependency graph |
 | `SUMMARY.md` | Human-readable analysis summary |
-| `call-graph.json` | Function-level call graph (7 languages) |
+| `call-graph.json` | Function-level call graph (8 languages: TS/JS, Python, Go, Rust, Ruby, Java, C++, Swift) |
 | `refactor-priorities.json` | Refactoring issues by file and function |
 | `mapping.json` | Requirement->function mapping (produced by `generate`) |
+| `spec-snapshot.json` | Compact coverage summary: git state, per-domain coverage %, uncovered hub functions (auto-updated after `analyze` and `generate`) |
+| `audit-report.json` | Latest parity audit report (produced by `spec-gen audit`) |
 | `vector-index/` | LanceDB semantic index (produced by `--embed`) |
 
 `spec-gen analyze` also writes **`ARCHITECTURE.md`** to your project root -- a Markdown overview of module clusters, entry points, and critical hubs, refreshed on every run.
@@ -1267,6 +1393,8 @@ The index is stored in `.spec-gen/analysis/vector-index/` and is automatically u
 | `OPENAI_COMPAT_API_KEY` | `openai-compat` | API key for OpenAI-compatible server |
 | `OPENAI_COMPAT_BASE_URL` | `openai-compat` | Base URL, e.g. `https://api.mistral.ai/v1` |
 | `GEMINI_API_KEY` | `gemini` | Google Gemini API key |
+| `COPILOT_API_BASE_URL` | `copilot` | Base URL of the copilot-api proxy (default: `http://localhost:4141/v1`) |
+| `COPILOT_API_KEY` | `copilot` | API key if the proxy requires auth (default: `copilot`) |
 | `EMBED_BASE_URL` | embedding | Base URL for the embedding API (e.g. `http://localhost:11434/v1`) |
 | `EMBED_MODEL` | embedding | Embedding model name (e.g. `nomic-embed-text`) |
 | `EMBED_API_KEY` | embedding | API key for the embedding service (defaults to `OPENAI_API_KEY`) |
@@ -1283,21 +1411,21 @@ The index is stored in `.spec-gen/analysis/vector-index/` and is automatically u
   export OPENAI_COMPAT_API_KEY=ollama       # OpenAI-compatible local server
   export GEMINI_API_KEY=...                 # Google Gemini
   ```
+  Or use a CLI-based provider (`claude-code`, `gemini-cli`, `mistral-vibe`, `cursor-agent`) which requires no API key — just the CLI tool on your PATH.
 - `analyze`, `drift`, and `init` require no API key
 
 ## Supported Languages
 
-| Language | Signatures | Call Graph |
-|----------|-----------|------------|
-| TypeScript / JavaScript | Full | Full |
-| Python | Full | Full |
-| Go | Full | Full |
-| Rust | Full | Full |
-| Ruby | Full | Full |
-| Java | Full | Full |
-| C++ | Full | Full |
-
-TypeScript projects get the best results due to richer type information.
+| Language | Signatures | Call Graph | Notes |
+|----------|-----------|------------|-------|
+| TypeScript / JavaScript | Full | Full | Best results — rich type info |
+| Python | Full | Full | `self`/`cls` intra-class + import resolution |
+| Go | Full | Full | |
+| Rust | Full | Full | |
+| Ruby | Full | Full | |
+| Java | Full | Full | |
+| C++ | Full | Full | No intra-module imports — cross-file edges synthesised from call graph |
+| Swift | Full | Full | No intra-module imports — cross-file edges synthesised from call graph |
 
 ## Usage Options
 
@@ -1405,6 +1533,10 @@ for (const [key, req] of Object.entries(requirements)) {
 | [examples/openspec-analysis/](examples/openspec-analysis/) | Static analysis output from `spec-gen analyze` |
 | [examples/openspec-cli/](examples/openspec-cli/) | Specifications generated with `spec-gen generate` |
 | [examples/drift-demo/](examples/drift-demo/) | Sample project configured for drift detection |
+| [examples/bmad/](examples/bmad/) | BMAD Method integration — agents, tasks, templates for brownfield codebases |
+| [examples/mistral-vibe/](examples/mistral-vibe/) | Mistral Vibe skills for analyze, generate, plan-refactor, implement-story |
+| [examples/spec-kit/](examples/spec-kit/) | spec-kit extension with `before_implement` / `after_implement` hooks |
+| [examples/gsd/](examples/gsd/) | Get-Shit-Done Claude Code commands for orient + drift |
 
 ## Development
 
@@ -1412,11 +1544,11 @@ for (const [key, req] of Object.entries(requirements)) {
 npm install          # Install dependencies
 npm run dev          # Development mode (watch)
 npm run build        # Build
-npm run test:run     # Run tests (2000+ unit tests)
+npm run test:run     # Run tests (2200+ unit tests)
 npm run typecheck    # Type check
 ```
 
-2000+ unit tests covering static analysis, call graph, refactor analysis, spec mapping, drift detection, LLM enhancement, ADR generation, MCP handlers, and the full CLI.
+2200+ unit tests covering static analysis, call graph (including Swift), refactor analysis, spec mapping, drift detection, LLM enhancement, ADR generation, MCP handlers, change proposals, cross-file edge synthesis, and the full CLI.
 
 ## Links
 
@@ -1426,5 +1558,6 @@ npm run typecheck    # Type check
 - [OpenSpec Integration](docs/OPENSPEC-INTEGRATION.md) - How spec-gen integrates with OpenSpec
 - [OpenSpec Format](docs/OPENSPEC-FORMAT.md) - Spec format reference
 - [Philosophy](docs/PHILOSOPHY.md) - "Archaeology over Creativity"
+- [Agentic Workflows](docs/agentic-workflows/) - Integration patterns for BMAD, Mistral Vibe, spec-kit, GSD
 - [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
 - [AGENTS.md](AGENTS.md) - LLM system prompt for direct prompting

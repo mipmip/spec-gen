@@ -65,6 +65,8 @@ export interface DependencyEdge {
   weight: number;
   /** Present when this edge was derived from an HTTP call rather than a static import */
   httpEdge?: HttpEdge;
+  /** True when this edge was synthesized from a call-graph cross-file call (implicit import) */
+  isCallEdge?: boolean;
 }
 
 /**
@@ -805,6 +807,91 @@ export async function buildDependencyGraph(
   const builder = new DependencyGraphBuilder(options);
   return builder.build(files);
 }
+
+// ============================================================================
+// CALL-GRAPH EDGE INJECTION
+// ============================================================================
+
+/**
+ * Languages that share a module-level namespace without explicit intra-file imports.
+ * For these, dependency edges must be derived from the call graph rather than imports.
+ */
+const IMPLICIT_IMPORT_LANGS = new Set(['Swift', 'C++', 'C']);
+
+/**
+ * Synthesize dependency edges from cross-file call edges and inject them into
+ * an existing DependencyGraphResult in-place.
+ *
+ * Use this for languages like Swift or C++ that don't have explicit intra-module
+ * imports, resulting in an empty dep graph when only import-based edges are built.
+ */
+export function injectCallGraphEdges(
+  depGraph: DependencyGraphResult,
+  callEdges: Array<{ callerId: string; calleeId: string }>,
+  nodeFilePath: (id: string) => string | undefined,
+): void {
+  // Build a Set of node IDs for quick membership test
+  const nodeIds = new Set(depGraph.nodes.map(n => n.id));
+
+  // Collect unique file-level edges
+  const seen = new Set<string>();
+  const newEdges: DependencyEdge[] = [];
+
+  for (const ce of callEdges) {
+    const callerFile = nodeFilePath(ce.callerId);
+    const calleeFile = nodeFilePath(ce.calleeId);
+    if (!callerFile || !calleeFile || callerFile === calleeFile) continue;
+    if (!nodeIds.has(callerFile) || !nodeIds.has(calleeFile)) continue;
+    const key = `${callerFile}→${calleeFile}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    newEdges.push({ source: callerFile, target: calleeFile, importedNames: [], isTypeOnly: false, weight: 1, isCallEdge: true });
+  }
+
+  if (newEdges.length === 0) return;
+
+  depGraph.edges.push(...newEdges);
+
+  // Recompute node in/out degrees
+  const inDeg = new Map<string, number>();
+  const outDeg = new Map<string, number>();
+  for (const e of depGraph.edges) {
+    outDeg.set(e.source, (outDeg.get(e.source) ?? 0) + 1);
+    inDeg.set(e.target, (inDeg.get(e.target) ?? 0) + 1);
+  }
+  for (const node of depGraph.nodes) {
+    node.metrics.inDegree = inDeg.get(node.id) ?? 0;
+    node.metrics.outDegree = outDeg.get(node.id) ?? 0;
+  }
+
+  // Update statistics
+  depGraph.statistics.edgeCount = depGraph.edges.length;
+  const totalDegree = depGraph.nodes.reduce((s, n) => s + n.metrics.inDegree + n.metrics.outDegree, 0);
+  depGraph.statistics.avgDegree = depGraph.nodes.length > 0 ? totalDegree / depGraph.nodes.length : 0;
+  const possible = depGraph.statistics.nodeCount * (depGraph.statistics.nodeCount - 1);
+  depGraph.statistics.density = possible > 0 ? depGraph.statistics.edgeCount / possible : 0;
+
+  // Recompute cluster internalEdges and rebuild structuralClusters.
+  // Without this, the viewer's cluster view stays empty even when edges exist.
+  const fileToCluster = new Map<string, string>();
+  for (const cl of depGraph.clusters) {
+    for (const fid of cl.files) fileToCluster.set(fid, cl.id);
+  }
+  const clusterInternalEdges = new Map<string, number>();
+  for (const e of depGraph.edges) {
+    const sc = fileToCluster.get(e.source);
+    const tc = fileToCluster.get(e.target);
+    if (sc && sc === tc) clusterInternalEdges.set(sc, (clusterInternalEdges.get(sc) ?? 0) + 1);
+  }
+  for (const cl of depGraph.clusters) {
+    cl.internalEdges = clusterInternalEdges.get(cl.id) ?? 0;
+    cl.isStructural = cl.internalEdges > 0;
+  }
+  depGraph.structuralClusters = depGraph.clusters.filter(cl => cl.internalEdges > 0);
+  depGraph.statistics.structuralClusterCount = depGraph.structuralClusters.length;
+}
+
+export { IMPLICIT_IMPORT_LANGS };
 
 // ============================================================================
 // EXPORT FORMATS

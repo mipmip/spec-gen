@@ -9,12 +9,11 @@ import { Command } from 'commander';
 import { stat, mkdir, writeFile } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { createRequire } from 'node:module';
-import { fileExists, formatDuration, formatAge, readJsonFile } from '../../utils/command-helpers.js';
+import { formatDuration, formatAge, readJsonFile, resolveLLMProvider, getAnalysisAge, estimateCost } from '../../utils/command-helpers.js';
 import {
   ANALYSIS_REUSE_THRESHOLD_MS,
   DEFAULT_MAX_FILES,
   DEFAULT_ANTHROPIC_MODEL,
-  DEFAULT_SURVEY_ESTIMATED_TOKENS,
   SPEC_GEN_DIR,
   SPEC_GEN_ANALYSIS_SUBDIR,
   SPEC_GEN_LOGS_SUBDIR,
@@ -49,7 +48,6 @@ import {
 import { runAnalysis } from './analyze.js';
 import {
   createLLMService,
-  lookupPricing,
   type LLMService,
 } from '../../core/services/llm-service.js';
 import {
@@ -104,18 +102,6 @@ interface RunMetadata {
 /**
  * Get analysis age if it exists
  */
-async function getAnalysisAge(analysisPath: string): Promise<number | null> {
-  try {
-    const repoStructurePath = join(analysisPath, ARTIFACT_REPO_STRUCTURE);
-    if (!(await fileExists(repoStructurePath))) {
-      return null;
-    }
-    const stats = await stat(repoStructurePath);
-    return Date.now() - stats.mtime.getTime();
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Load analysis data from disk
@@ -154,28 +140,6 @@ async function loadAnalysis(analysisPath: string): Promise<{
 /**
  * Estimate cost for generation
  */
-function estimateCost(llmContext: LLMContext, model: string): { tokens: number; cost: number } {
-  let totalTokens = 0;
-  totalTokens += llmContext.phase1_survey.estimatedTokens ?? DEFAULT_SURVEY_ESTIMATED_TOKENS;
-  for (const file of llmContext.phase2_deep.files) {
-    totalTokens += file.tokens;
-  }
-  const outputTokens = Math.ceil(totalTokens * 0.3);
-  totalTokens += outputTokens;
-
-  // Infer provider from model ID prefix for cost estimation
-  const provider = model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')
-    ? 'openai'
-    : model.startsWith('gemini')
-    ? 'gemini'
-    : 'anthropic';
-  const modelPricing = lookupPricing(provider, model);
-  const inputCost = (totalTokens * 0.7 / 1_000_000) * modelPricing.input;
-  const outputCost = (outputTokens / 1_000_000) * modelPricing.output;
-  const cost = inputCost + outputCost;
-
-  return { tokens: totalTokens, cost };
-}
 
 /**
  * Save run metadata
@@ -482,16 +446,11 @@ The pipeline saves run metadata to .spec-gen/runs/ for tracking.
       }
 
       // Check for API key
-      const anthropicKey = process.env.ANTHROPIC_API_KEY;
-      const openaiKey = process.env.OPENAI_API_KEY;
-
-      if (!anthropicKey && !openaiKey) {
+      const resolved = resolveLLMProvider(specGenConfig ?? undefined);
+      if (!resolved) {
         console.log('   ✗ No LLM API key found');
         console.log('');
-        logger.error('Set ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable.');
-        logger.discovery('To get an API key:');
-        logger.discovery('  Anthropic: https://console.anthropic.com/');
-        logger.discovery('  OpenAI: https://platform.openai.com/');
+        logger.error('Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or OPENAI_COMPAT_API_KEY + OPENAI_COMPAT_BASE_URL.');
         metadata.result = 'failure';
         metadata.error = 'No LLM API key';
         process.exitCode = 1;
@@ -500,7 +459,7 @@ The pipeline saves run metadata to .spec-gen/runs/ for tracking.
 
       // Estimate cost
       if (analysisData) {
-        const estimate = estimateCost(analysisData.llmContext, opts.model);
+        const estimate = estimateCost(analysisData.llmContext, resolved.provider, opts.model);
         console.log(`   Estimated cost: ~$${estimate.cost.toFixed(2)}`);
 
         // Confirmation prompt
@@ -543,12 +502,11 @@ The pipeline saves run metadata to .spec-gen/runs/ for tracking.
         return;
       }
 
-      // Create LLM service (CLI flags > env vars > config file)
-      const provider = anthropicKey ? 'anthropic' : 'openai';
       let llm: LLMService;
       try {
         llm = createLLMService({
-          provider,
+          provider: resolved.provider,
+          openaiCompatBaseUrl: resolved.openaiCompatBaseUrl,
           model: opts.model,
           apiBase: globalOpts.apiBase ?? specGenConfig?.llm?.apiBase,
           sslVerify: globalOpts.insecure != null ? !globalOpts.insecure : specGenConfig?.llm?.sslVerify ?? true,

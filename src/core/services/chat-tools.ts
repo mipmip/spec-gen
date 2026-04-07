@@ -27,6 +27,7 @@ import {
   handleSearchSpecs,
   handleListSpecDomains,
   handleGetSpec,
+  handleUnifiedSearch,
 } from './mcp-handlers/semantic.js';
 
 import {
@@ -66,7 +67,10 @@ function extractFilePaths(obj: unknown): string[] {
 
   const rec = (o: unknown) => {
     if (!o || typeof o !== 'object') return;
-    if (Array.isArray(o)) { o.forEach(rec); return; }
+    if (Array.isArray(o)) {
+      o.forEach(rec);
+      return;
+    }
     const r = o as Record<string, unknown>;
     for (const [k, v] of Object.entries(r)) {
       if (k === 'file' || k === 'filePath' || k === 'callerFile' || k === 'calleeFile') {
@@ -96,8 +100,11 @@ export const CHAT_TOOLS: ChatTool[] = [
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
-        task:      { type: 'string', description: 'Natural language description of the task' },
-        limit:     { type: 'number', description: 'Number of relevant functions to return (default: 5)' },
+        task: { type: 'string', description: 'Natural language description of the task' },
+        limit: {
+          type: 'number',
+          description: 'Number of relevant functions to return (default: 5)',
+        },
       },
       required: ['directory', 'task'],
     },
@@ -105,7 +112,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       const result = await handleOrient(
         (args.directory as string) ?? directory,
         args.task as string,
-        (args.limit as number) ?? 5,
+        (args.limit as number) ?? 5
       );
       const paths: string[] = [];
       if (result && typeof result === 'object') {
@@ -132,9 +139,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       required: ['directory'],
     },
     async execute(directory, args) {
-      const result = await handleGetArchitectureOverview(
-        (args.directory as string) ?? directory
-      );
+      const result = await handleGetArchitectureOverview((args.directory as string) ?? directory);
       const paths: string[] = [];
       if (result && typeof result === 'object') {
         const r = result as Record<string, unknown>;
@@ -181,9 +186,9 @@ export const CHAT_TOOLS: ChatTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        directory:    { type: 'string', description: 'Absolute path to the project directory' },
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
         functionName: { type: 'string', description: 'Function name (exact or partial match)' },
-        direction:    {
+        direction: {
           type: 'string',
           enum: ['downstream', 'upstream', 'both'],
           description: 'Direction (default: downstream)',
@@ -215,8 +220,8 @@ export const CHAT_TOOLS: ChatTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        directory:      { type: 'string', description: 'Absolute path to the project directory' },
-        entryFunction:  { type: 'string', description: 'Starting function name (exact or partial)' },
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        entryFunction: { type: 'string', description: 'Starting function name (exact or partial)' },
         targetFunction: { type: 'string', description: 'Target function name (exact or partial)' },
         maxDepth: { type: 'number', description: 'Max path length in hops (default: 6)' },
         maxPaths: { type: 'number', description: 'Max paths returned (default: 10)' },
@@ -229,7 +234,7 @@ export const CHAT_TOOLS: ChatTool[] = [
         args.entryFunction as string,
         args.targetFunction as string,
         (args.maxDepth as number) ?? 6,
-        (args.maxPaths as number) ?? 10,
+        (args.maxPaths as number) ?? 10
       );
       return { result, filePaths: extractFilePaths(result) };
     },
@@ -247,8 +252,8 @@ export const CHAT_TOOLS: ChatTool[] = [
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
-        symbol:    { type: 'string', description: 'Function name to analyse (exact or partial)' },
-        depth:     { type: 'number', description: 'Chain depth (default: 2)' },
+        symbol: { type: 'string', description: 'Function name to analyse (exact or partial)' },
+        depth: { type: 'number', description: 'Chain depth (default: 2)' },
       },
       required: ['directory', 'symbol'],
     },
@@ -273,8 +278,8 @@ export const CHAT_TOOLS: ChatTool[] = [
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
-        limit:     { type: 'number', description: 'Maximum hubs to return (default: 10)' },
-        minFanIn:  { type: 'number', description: 'Minimum fan-in threshold (default: 3)' },
+        limit: { type: 'number', description: 'Maximum hubs to return (default: 10)' },
+        minFanIn: { type: 'number', description: 'Minimum fan-in threshold (default: 3)' },
       },
       required: ['directory'],
     },
@@ -298,8 +303,8 @@ export const CHAT_TOOLS: ChatTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        directory:       { type: 'string', description: 'Absolute path to the project directory' },
-        filePath:        { type: 'string', description: 'Optional: restrict to a specific file' },
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        filePath: { type: 'string', description: 'Optional: restrict to a specific file' },
         fanOutThreshold: { type: 'number', description: 'Minimum fan-out (default: 8)' },
       },
       required: ['directory'],
@@ -325,9 +330,9 @@ export const CHAT_TOOLS: ChatTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        directory:   { type: 'string', description: 'Absolute path to the project directory' },
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
         description: { type: 'string', description: 'Natural language description of the feature' },
-        limit:       { type: 'number', description: 'Number of candidates (default: 5)' },
+        limit: { type: 'number', description: 'Number of candidates (default: 5)' },
       },
       required: ['directory', 'description'],
     },
@@ -352,7 +357,7 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'search_code',
     description:
-      'USE THIS WHEN: you don\'t know which file or function handles a concept — ' +
+      "USE THIS WHEN: you don't know which file or function handles a concept — " +
       '"where is rate limiting implemented?", "which function validates tokens?", ' +
       '"what handles authentication?". Beats grep when the function name is unknown. ' +
       'Falls back to keyword search automatically if the embedding server is down.',
@@ -360,8 +365,8 @@ export const CHAT_TOOLS: ChatTool[] = [
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
-        query:     { type: 'string', description: 'Natural language search query' },
-        limit:     { type: 'number', description: 'Results to return (default: 10)' },
+        query: { type: 'string', description: 'Natural language search query' },
+        limit: { type: 'number', description: 'Results to return (default: 10)' },
       },
       required: ['directory', 'query'],
     },
@@ -394,12 +399,16 @@ export const CHAT_TOOLS: ChatTool[] = [
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
-        query:     { type: 'string', description: 'Natural language search query (omit to list domains)' },
-        limit:     { type: 'number', description: 'Results to return (default: 10)' },
-        domain:    { type: 'string', description: 'Filter by domain name (e.g. "auth", "analyzer")' },
-        section:   {
+        query: {
           type: 'string',
-          description: 'Filter by section type: "requirements", "purpose", "design", "architecture", "entities"',
+          description: 'Natural language search query (omit to list domains)',
+        },
+        limit: { type: 'number', description: 'Results to return (default: 10)' },
+        domain: { type: 'string', description: 'Filter by domain name (e.g. "auth", "analyzer")' },
+        section: {
+          type: 'string',
+          description:
+            'Filter by section type: "requirements", "purpose", "design", "architecture", "entities"',
         },
       },
       required: ['directory'],
@@ -416,7 +425,7 @@ export const CHAT_TOOLS: ChatTool[] = [
         args.query as string,
         (args.limit as number) ?? 10,
         args.domain as string | undefined,
-        args.section as string | undefined,
+        args.section as string | undefined
       );
       // linkedFiles arrays are returned per result -- collect all for graph highlighting
       const paths: string[] = [];
@@ -424,6 +433,53 @@ export const CHAT_TOOLS: ChatTool[] = [
         const r = result as Record<string, unknown>;
         for (const res of (r.results as Array<{ linkedFiles?: string[] }>) ?? []) {
           for (const f of res.linkedFiles ?? []) paths.push(f);
+        }
+      }
+      return { result, filePaths: [...new Set(paths)] };
+    },
+  },
+
+  // ── Unified search (code + specs) ──────────────────────────────────────
+  {
+    name: 'unified_search',
+    description:
+      'USE THIS WHEN: the user asks to search across both code and specs — "find everything ' +
+      'related to authentication", "show me code and specs for user validation", or "search ' +
+      'for rate limiting implementation and requirements". ' +
+      'Combines code and spec indexes with cross-scoring to boost results that are linked ' +
+      'through bidirectional mappings. Results include provenance tags (code, spec, or both).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        query: { type: 'string', description: 'Natural language search query' },
+        limit: { type: 'number', description: 'Results to return (default: 10)' },
+        language: {
+          type: 'string',
+          description: 'Filter by language (e.g., "TypeScript", "Python")',
+        },
+        domain: { type: 'string', description: 'Filter by spec domain (e.g., "auth", "analyzer")' },
+        section: {
+          type: 'string',
+          description: 'Filter by spec section type: "requirements", "purpose", "design", etc.',
+        },
+      },
+      required: ['directory', 'query'],
+    },
+    async execute(directory, args) {
+      const result = await handleUnifiedSearch(
+        (args.directory as string) ?? directory,
+        args.query as string,
+        (args.limit as number) ?? 10,
+        args.language as string | undefined,
+        args.domain as string | undefined,
+        args.section as string | undefined
+      );
+      const paths: string[] = [];
+      if (result && typeof result === 'object') {
+        const r = result as Record<string, unknown>;
+        for (const res of (r.results as Array<{ source?: { filePath?: string } }>) ?? []) {
+          if (res.source?.filePath) paths.push(res.source.filePath);
         }
       }
       return { result, filePaths: [...new Set(paths)] };
@@ -441,14 +497,14 @@ export const CHAT_TOOLS: ChatTool[] = [
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
-        domain:    { type: 'string', description: 'Domain name, e.g. "auth" or "analyzer"' },
+        domain: { type: 'string', description: 'Domain name, e.g. "auth" or "analyzer"' },
       },
       required: ['directory', 'domain'],
     },
     async execute(directory, args) {
       const result = await handleGetSpec(
         (args.directory as string) ?? directory,
-        args.domain as string,
+        args.domain as string
       );
       return { result, filePaths: [] };
     },
@@ -465,7 +521,10 @@ export const CHAT_TOOLS: ChatTool[] = [
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
-        filePath:  { type: 'string', description: 'Relative file path, e.g. "src/core/analyzer/vector-index.ts"' },
+        filePath: {
+          type: 'string',
+          description: 'Relative file path, e.g. "src/core/analyzer/vector-index.ts"',
+        },
         direction: {
           type: 'string',
           enum: ['imports', 'importedBy', 'both'],
@@ -478,7 +537,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       const result = await handleGetFileDependencies(
         (args.directory as string) ?? directory,
         args.filePath as string,
-        (args.direction as 'imports' | 'importedBy' | 'both') ?? 'both',
+        (args.direction as 'imports' | 'importedBy' | 'both') ?? 'both'
       );
       const paths: string[] = [];
       if (result && typeof result === 'object') {
@@ -505,14 +564,14 @@ export const CHAT_TOOLS: ChatTool[] = [
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
-        query:     { type: 'string', description: 'Optional text filter on title or content' },
+        query: { type: 'string', description: 'Optional text filter on title or content' },
       },
       required: ['directory'],
     },
     async execute(directory, args) {
       const result = await handleGetDecisions(
         (args.directory as string) ?? directory,
-        args.query as string | undefined,
+        args.query as string | undefined
       );
       return { result, filePaths: [] };
     },
@@ -546,7 +605,7 @@ export const CHAT_TOOLS: ChatTool[] = [
 
 /** Convert CHAT_TOOLS to the OpenAI function-calling format. */
 export function toChatToolDefinitions() {
-  return CHAT_TOOLS.map(t => ({
+  return CHAT_TOOLS.map((t) => ({
     type: 'function' as const,
     function: {
       name: t.name,

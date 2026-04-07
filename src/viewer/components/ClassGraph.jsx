@@ -36,40 +36,84 @@ const LANG_CSS_VAR = {
   Go:          'var(--lc-cyan)',
   Rust:        'var(--lc-red)',
   Ruby:        'var(--lc-pink)',
+  Swift:       'var(--lc-orange)',
 };
+
+const COMPONENT_COLORS = [
+  'var(--lc-cyan)',
+  'var(--lc-orange)',
+  'var(--lc-green)',
+  'var(--lc-pink)',
+  'var(--lc-purple)',
+  'var(--lc-yellow)',
+  'var(--lc-red)',
+  '#7eb8f7',
+  '#f7c56a',
+  '#a0e8a0',
+];
 
 function langColor(lang) {
   return LANG_CSS_VAR[lang] ?? 'var(--ac-primary)';
+}
+
+function componentColor(compIndex) {
+  return COMPONENT_COLORS[compIndex % COMPONENT_COLORS.length];
 }
 
 // ============================================================================
 // FORCE LAYOUT
 // ============================================================================
 
+// Find connected components (union-find)
+function connectedComponents(nodes, edges) {
+  const parent = new Map(nodes.map(n => [n.id, n.id]));
+  function find(x) {
+    if (parent.get(x) !== x) parent.set(x, find(parent.get(x)));
+    return parent.get(x);
+  }
+  function union(a, b) { parent.set(find(a), find(b)); }
+  edges.forEach(e => { if (parent.has(e.source) && parent.has(e.target)) union(e.source, e.target); });
+  const groups = new Map();
+  nodes.forEach(n => {
+    const root = find(n.id);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(n);
+  });
+  return [...groups.values()].sort((a, b) => b.length - a.length);
+}
+
 function forceLayout(nodes, edges) {
   if (!nodes.length) return {};
   const pos = {};
   const angle0 = -Math.PI / 2;
 
-  // Seed in a circle
-  nodes.forEach((n, i) => {
-    const a = angle0 + (i / nodes.length) * Math.PI * 2;
-    pos[n.id] = {
-      x: W / 2 + Math.cos(a) * W * 0.38,
-      y: H / 2 + Math.sin(a) * H * 0.33,
-    };
+  // Assign each component its own center so components don't overlap
+  const components = connectedComponents(nodes, edges);
+  const nComp = components.length;
+  components.forEach((comp, ci) => {
+    const a = angle0 + (ci / nComp) * Math.PI * 2;
+    const cx = nComp === 1 ? W / 2 : W / 2 + Math.cos(a) * W * 0.28;
+    const cy = nComp === 1 ? H / 2 : H / 2 + Math.sin(a) * H * 0.24;
+    const r = Math.min(60, 18 * Math.sqrt(comp.length));
+    comp.forEach((n, i) => {
+      const a2 = angle0 + (i / Math.max(comp.length, 1)) * Math.PI * 2;
+      pos[n.id] = { x: cx + Math.cos(a2) * r, y: cy + Math.sin(a2) * r };
+    });
   });
 
-  const k = Math.sqrt((W * H) / Math.max(nodes.length, 1)) * 0.75;
+  const k = Math.sqrt((W * H) / Math.max(nodes.length, 1)) * 0.65;
 
   for (let iter = 0; iter < ITERS; iter++) {
     const disp = {};
     nodes.forEach((n) => { disp[n.id] = { x: 0, y: 0 }; });
 
-    // Repulsion
+    // Repulsion (only within same component to avoid inter-component mixing)
+    const compOf = new Map();
+    components.forEach((comp, ci) => comp.forEach(n => compOf.set(n.id, ci)));
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = nodes[i], b = nodes[j];
+        if (compOf.get(a.id) !== compOf.get(b.id)) continue;
         const dx = pos[a.id].x - pos[b.id].x;
         const dy = pos[a.id].y - pos[b.id].y;
         const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
@@ -92,6 +136,22 @@ function forceLayout(nodes, edges) {
       disp[e.source].y -= (dy / d) * f;
       disp[e.target].x  += (dx / d) * f;
       disp[e.target].y  += (dy / d) * f;
+    });
+
+    // Gravity toward each component's assigned center
+    const compCenters = new Map();
+    components.forEach((comp, ci) => {
+      const a = angle0 + (ci / nComp) * Math.PI * 2;
+      compCenters.set(ci, {
+        cx: nComp === 1 ? W / 2 : W / 2 + Math.cos(a) * W * 0.28,
+        cy: nComp === 1 ? H / 2 : H / 2 + Math.sin(a) * H * 0.24,
+      });
+    });
+    nodes.forEach((n) => {
+      const ci = compOf.get(n.id);
+      const { cx, cy } = compCenters.get(ci);
+      disp[n.id].x += (cx - pos[n.id].x) * 0.06;
+      disp[n.id].y += (cy - pos[n.id].y) * 0.06;
     });
 
     const temp = k * Math.max(0.01, 1 - iter / ITERS) * 0.7;
@@ -435,11 +495,31 @@ export function ClassGraph({ classData, onSelectClass, selectedClassId, focusedP
     ...classCallEdges,
   ], [inheritanceEdges, classCallEdges]);
 
-  const classKey = allClasses.map(c => c.id).join('|');
+  // Only include nodes that participate in at least one edge — isolated nodes
+  // flood the canvas and hit the clamping boundary when there are many of them.
+  const { connectedClasses, isolatedCount } = useMemo(() => {
+    const connected = new Set();
+    for (const e of layoutEdges) { connected.add(e.source); connected.add(e.target); }
+    const filtered = allClasses.filter(c => connected.has(c.id));
+    // Fall back to all nodes if nothing has cross-class edges (avoids blank canvas)
+    const connectedClasses = filtered.length > 0 ? filtered : allClasses;
+    return { connectedClasses, isolatedCount: allClasses.length - connectedClasses.length };
+  }, [allClasses, layoutEdges]);
+
+  const classKey = connectedClasses.map(c => c.id).join('|');
   const edgeCount = layoutEdges.length;
+
+  const compIndexMap = useMemo(() => {
+    const map = new Map();
+    connectedComponents(connectedClasses, layoutEdges).forEach((comp, ci) => {
+      comp.forEach(n => map.set(n.id, ci));
+    });
+    return map;
+  }, [classKey, edgeCount]);
+
   const pos = useMemo(
-    () => forceLayout(allClasses, layoutEdges),
-    [classKey, edgeCount], // stable keys — intentionally omit allClasses/layoutEdges refs
+    () => forceLayout(connectedClasses, layoutEdges),
+    [classKey, edgeCount],
   );
 
   const showTip = useCallback((e, lines) => {
@@ -497,6 +577,7 @@ export function ClassGraph({ classData, onSelectClass, selectedClassId, focusedP
 
   const classCount  = serverClasses.length;
   const moduleCount = moduleNodes.length;
+  const allLangsSame = new Set(allClasses.map(c => c.language)).size <= 1;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -510,6 +591,7 @@ export function ClassGraph({ classData, onSelectClass, selectedClassId, focusedP
         <span>{moduleCount} modules</span>
         {inheritanceEdges.length > 0 && <span>{inheritanceEdges.length} inheritance</span>}
         <span>{classCallEdges.length} cross-module calls</span>
+        {isolatedCount > 0 && <span style={{ color: 'var(--tx-dim)' }}>{isolatedCount} isolated hidden</span>}
         <span style={{ color: 'var(--tx-dim)' }}>hover for details · click to expand</span>
       </div>
 
@@ -615,12 +697,13 @@ export function ClassGraph({ classData, onSelectClass, selectedClassId, focusedP
           })}
 
           {/* ── Nodes ─────────────────────────────────────────────────────── */}
-          {allClasses.map(cls => {
+          {connectedClasses.map(cls => {
             const p = pos[cls.id];
             if (!p) return null;
             const isExpanded = expanded.has(cls.id);
             const methods = cls.methodIds.map(id => fnMap.get(id)).filter(Boolean);
-            const color = langColor(cls.language);
+            const compIdx = compIndexMap.get(cls.id) ?? 0;
+            const color = allLangsSame ? componentColor(compIdx) : langColor(cls.language);
             const isFocused = focusedPathSet.has(cls.filePath);
             const hasFocus = focusedPathSet.size > 0;
             const isDimmed = hasFocus && !isFocused;

@@ -44,8 +44,10 @@ import {
   handleSearchSpecs,
   handleListSpecDomains,
   handleGetSpec,
+  handleUnifiedSearch,
 } from '../../core/services/mcp-handlers/semantic.js';
 import { handleOrient } from '../../core/services/mcp-handlers/orient.js';
+import { handleGenerateChangeProposal, handleAnnotateStory } from '../../core/services/mcp-handlers/change.js';
 import {
   handleAnalyzeCodebase,
   handleGetArchitectureOverview,
@@ -62,6 +64,7 @@ import {
   handleGetSchemaInventory,
   handleGetUIComponents,
   handleGetEnvVars,
+  handleAuditSpecCoverage,
 } from '../../core/services/mcp-handlers/analysis.js';
 
 // Re-export utilities for tests
@@ -94,6 +97,7 @@ export {
   handleGetSchemaInventory,
   handleGetUIComponents,
   handleGetEnvVars,
+  handleAuditSpecCoverage,
 };
 
 // ============================================================================
@@ -247,9 +251,11 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'get_subgraph',
     description:
-      'Extract a subgraph of the call graph centred on a specific function. ' +
+      'Extract a subgraph of the call graph centred on ONE specific function. ' +
+      'Call once per function — do not combine multiple function names in a single call. ' +
       'Useful for impact analysis ("what does X call?"), dependency tracing ' +
       '("who calls X?"), or understanding a change\'s blast radius. ' +
+      'Prefer maxDepth 1 or 2; depth ≥ 3 on large projects may timeout. ' +
       'Run analyze_codebase first.',
     inputSchema: {
       type: 'object',
@@ -260,7 +266,7 @@ export const TOOL_DEFINITIONS = [
         },
         functionName: {
           type: 'string',
-          description: 'Name of the function to centre the subgraph on (exact or partial match)',
+          description: 'Name of a single function to centre the subgraph on (exact name preferred; partial substring also accepted)',
         },
         direction: {
           type: 'string',
@@ -272,7 +278,7 @@ export const TOOL_DEFINITIONS = [
         },
         maxDepth: {
           type: 'number',
-          description: 'Maximum traversal depth (default: 3)',
+          description: 'Maximum traversal depth (default: 3, recommended: 1–2 to avoid timeout)',
         },
         format: {
           type: 'string',
@@ -660,6 +666,46 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'search_unified',
+    description:
+      'USE THIS WHEN: you want to find where something is implemented AND what the spec says about it ' +
+      'in a single call. Searches both code functions and spec requirements simultaneously, then ' +
+      'cross-boosts results that are linked through mapping.json — so a function that implements a ' +
+      'matching requirement ranks higher than one found by code search alone. ' +
+      'Returns results with type "code", "spec", or "both" and a mappingBoost score. ' +
+      'Requires "spec-gen analyze --embed" and a prior "spec-gen generate" run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Absolute path to the project directory',
+        },
+        query: {
+          type: 'string',
+          description: 'Natural language query, e.g. "validate user authentication"',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of results to return (default: 10)',
+        },
+        language: {
+          type: 'string',
+          description: 'Filter code results by language (e.g. "TypeScript")',
+        },
+        domain: {
+          type: 'string',
+          description: 'Filter spec results by domain name',
+        },
+        section: {
+          type: 'string',
+          description: 'Filter spec results by section type: "requirements", "purpose", etc.',
+        },
+      },
+      required: ['directory', 'query'],
+    },
+  },
+  {
     name: 'get_spec',
     description:
       'Return the full content of a spec domain\'s specification file (spec.md) and the ' +
@@ -723,6 +769,76 @@ export const TOOL_DEFINITIONS = [
         },
       },
       required: ['directory', 'filePath'],
+    },
+  },
+  {
+    name: 'generate_change_proposal',
+    description:
+      'USE THIS WHEN: you have a BMAD story, a feature description, or a spec delta request, ' +
+      'and want to create a structured OpenSpec change proposal before writing any code. ' +
+      'Combines orient + search_specs + analyze_impact to produce a pre-filled ' +
+      'openspec/changes/{slug}/proposal.md — no LLM required. ' +
+      'Output includes affected domains, touched requirements, risk scores, and insertion points. ' +
+      'Run analyze_codebase first; spec index optional (degrades gracefully).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Absolute path to the project directory',
+        },
+        description: {
+          type: 'string',
+          description:
+            'Intent of the change — story title + primary AC, or a free-form feature description. ' +
+            'e.g. "add retry logic to payment processing — must retry up to 3 times on timeout"',
+        },
+        slug: {
+          type: 'string',
+          description:
+            'Change identifier used as the directory name, e.g. "add-payment-retry". ' +
+            'Will be lowercased and hyphenated automatically.',
+        },
+        storyContent: {
+          type: 'string',
+          description:
+            'Optional: full BMAD story content (markdown). If provided, it is embedded verbatim ' +
+            'in the proposal for traceability.',
+        },
+      },
+      required: ['directory', 'description', 'slug'],
+    },
+  },
+  {
+    name: 'annotate_story',
+    description:
+      'USE THIS WHEN: you have a BMAD story file and want to auto-populate its risk_context ' +
+      'section with structural analysis from the codebase. ' +
+      'Reads the story file, runs orient + analyze_impact, writes the risk_context block ' +
+      'directly into the file (replaces existing section or inserts it). ' +
+      'Run by the Architect Agent after writing stories — eliminates manual copy-paste of ' +
+      'generate_change_proposal output. Run analyze_codebase first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Absolute path to the project directory',
+        },
+        storyFilePath: {
+          type: 'string',
+          description:
+            'Path to the BMAD story markdown file — relative to the project directory ' +
+            'or absolute. e.g. ".bmad-method/stories/001-add-payment-retry.md"',
+        },
+        description: {
+          type: 'string',
+          description:
+            'Story intent for structural analysis — use story title + primary AC. ' +
+            'e.g. "add payment retry — must retry up to 3 times on timeout"',
+        },
+      },
+      required: ['directory', 'storyFilePath', 'description'],
     },
   },
   {
@@ -828,6 +944,32 @@ export const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         directory: { type: 'string', description: 'Absolute path to the project directory' },
+      },
+      required: ['directory'],
+    },
+  },
+  {
+    name: 'audit_spec_coverage',
+    description:
+      'Parity audit: report spec coverage gaps without any LLM call. ' +
+      'Returns uncovered functions (exist in call graph but have no spec), ' +
+      'hub gaps (high fan-in functions with no spec), ' +
+      'orphan requirements (spec requirements with no mapped implementation), ' +
+      'and stale domains (source files changed after spec was last written). ' +
+      'Use this before starting a new feature to understand what needs specs, ' +
+      'or to audit coverage health. Requires "spec-gen analyze" to have been run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Absolute path to the project directory' },
+        maxUncovered: {
+          type: 'number',
+          description: 'Maximum uncovered functions to return (default: 50)',
+        },
+        hubThreshold: {
+          type: 'number',
+          description: 'Minimum fanIn to flag a function as a hub gap (default: 5)',
+        },
       },
       required: ['directory'],
     },
@@ -951,6 +1093,10 @@ async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
         const { directory, query, limit = 10, domain, section } =
           args as { directory: string; query: string; limit?: number; domain?: string; section?: string };
         result = await handleSearchSpecs(directory, query, limit, domain, section);
+      } else if (name === 'search_unified') {
+        const { directory, query, limit = 10, language, domain, section } =
+          args as { directory: string; query: string; limit?: number; language?: string; domain?: string; section?: string };
+        result = await handleUnifiedSearch(directory, query, limit, language, domain, section);
       } else if (name === 'list_spec_domains') {
         const { directory } = args as { directory: string };
         result = await handleListSpecDomains(directory);
@@ -965,6 +1111,14 @@ async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
         const { directory, filePath, direction = 'both' } =
           args as { directory: string; filePath: string; direction?: 'imports' | 'importedBy' | 'both' };
         result = await handleGetFileDependencies(directory, filePath, direction);
+      } else if (name === 'generate_change_proposal') {
+        const { directory, description, slug, storyContent } =
+          args as { directory: string; description: string; slug: string; storyContent?: string };
+        result = await handleGenerateChangeProposal(directory, description, slug, storyContent);
+      } else if (name === 'annotate_story') {
+        const { directory, storyFilePath, description } =
+          args as { directory: string; storyFilePath: string; description: string };
+        result = await handleAnnotateStory(directory, storyFilePath, description);
       } else if (name === 'get_decisions') {
         const { directory, query } = args as { directory: string; query?: string };
         result = await handleGetDecisions(directory, query);
@@ -983,6 +1137,10 @@ async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
       } else if (name === 'get_env_vars') {
         const { directory } = args as { directory: string };
         result = await handleGetEnvVars(directory);
+      } else if (name === 'audit_spec_coverage') {
+        const { directory, maxUncovered = 50, hubThreshold = 5 } =
+          args as { directory: string; maxUncovered?: number; hubThreshold?: number };
+        result = await handleAuditSpecCoverage(directory, maxUncovered, hubThreshold);
       } else {
         return {
           content: [{ type: 'text', text: `Unknown tool: ${name}` }],

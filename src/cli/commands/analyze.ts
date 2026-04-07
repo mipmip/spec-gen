@@ -6,10 +6,10 @@
  */
 
 import { Command } from 'commander';
-import { stat, writeFile, mkdir, readFile } from 'node:fs/promises';
+import { writeFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../../utils/logger.js';
-import { fileExists, formatDuration, formatAge } from '../../utils/command-helpers.js';
+import { fileExists, formatDuration, formatAge, getAnalysisAge } from '../../utils/command-helpers.js';
 import {
   ANALYSIS_STALE_THRESHOLD_MS,
   DEFAULT_MAX_FILES,
@@ -81,18 +81,6 @@ function collect(value: string, previous: string[]): string[] {
 /**
  * Check if analysis exists and return its age
  */
-async function getAnalysisAge(outputPath: string): Promise<number | null> {
-  try {
-    const repoStructurePath = join(outputPath, ARTIFACT_REPO_STRUCTURE);
-    if (!(await fileExists(repoStructurePath))) {
-      return null;
-    }
-    const stats = await stat(repoStructurePath);
-    return Date.now() - stats.mtime.getTime();
-  } catch {
-    return null;
-  }
-}
 
 // ============================================================================
 // CORE ANALYSIS FUNCTION

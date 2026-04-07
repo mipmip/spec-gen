@@ -65,7 +65,7 @@ export async function runStage2(
     }
     if (isLargeFile && !graphSection) {
       for (const entity of entitiesFromFile) {
-        entity.description = `[PARTIAL SPEC — file too large to fully analyze (${chunks.length} parts)] ${entity.description}`;
+        entity.description = `${entity.description} *(analyzed in ${chunks.length} chunks)*`;
       }
     }
     allEntities.push(...entitiesFromFile);

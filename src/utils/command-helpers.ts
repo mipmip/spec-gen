@@ -5,7 +5,16 @@
  * are collected here to avoid duplication.
  */
 
-import { access, readFile } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import {
+  LLM_SYSTEM_PROMPT_OVERHEAD_TOKENS,
+  GENERATION_OUTPUT_RATIO,
+  DEFAULT_SURVEY_ESTIMATED_TOKENS,
+  ARTIFACT_REPO_STRUCTURE,
+} from '../constants.js';
+import { lookupPricing } from '../core/services/llm-service.js';
+import type { LLMContext } from '../core/analyzer/artifact-generator.js';
 
 /**
  * Check whether a file or directory exists at the given path.
@@ -54,6 +63,43 @@ export function parseList(value: string): string[] {
   return value.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+export type ProviderName = 'anthropic' | 'openai' | 'openai-compat' | 'gemini' | 'claude-code' | 'mistral-vibe' | 'copilot' | 'gemini-cli' | 'cursor-agent';
+
+/**
+ * Resolve the LLM provider and base URL from environment variables.
+ * Returns null when no key is found, allowing callers to handle the error their own way.
+ *
+ * Priority: ANTHROPIC_API_KEY > GEMINI_API_KEY > OPENAI_COMPAT_API_KEY > OPENAI_API_KEY
+ */
+export function resolveLLMProvider(specGenConfig?: {
+  generation?: { provider?: string; openaiCompatBaseUrl?: string };
+}): { provider: ProviderName; openaiCompatBaseUrl?: string } | null {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const openaiCompatKey = process.env.OPENAI_COMPAT_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+
+  const configProvider = specGenConfig?.generation?.provider as ProviderName | undefined;
+
+  // These providers don't need an API key
+  if (configProvider === 'claude-code' || configProvider === 'mistral-vibe' || configProvider === 'copilot' || configProvider === 'gemini-cli' || configProvider === 'cursor-agent') {
+    return { provider: configProvider };
+  }
+
+  if (!anthropicKey && !geminiKey && !openaiCompatKey && !openaiKey) return null;
+
+  const envProvider: ProviderName = anthropicKey ? 'anthropic'
+    : geminiKey ? 'gemini'
+    : openaiCompatKey ? 'openai-compat'
+    : 'openai';
+
+  const provider = configProvider ?? envProvider;
+  const openaiCompatBaseUrl = process.env.OPENAI_COMPAT_BASE_URL
+    ?? specGenConfig?.generation?.openaiCompatBaseUrl;
+
+  return { provider, openaiCompatBaseUrl };
+}
+
 /**
  * Read and JSON-parse a file, returning null when the file does not exist.
  * Throws a descriptive error when the file exists but contains invalid JSON.
@@ -75,4 +121,51 @@ export async function readJsonFile<T>(filePath: string, label: string): Promise<
   } catch {
     throw new Error(`Failed to parse ${label} — the file may be corrupted. Re-run spec-gen analyze to regenerate.`);
   }
+}
+
+/**
+ * Return the age in milliseconds of the analysis at the given path,
+ * measured from the mtime of repo-structure.json. Returns null when not found.
+ */
+export async function getAnalysisAge(analysisPath: string): Promise<number | null> {
+  try {
+    const repoStructurePath = join(analysisPath, ARTIFACT_REPO_STRUCTURE);
+    if (!(await fileExists(repoStructurePath))) return null;
+    const stats = await stat(repoStructurePath);
+    return Date.now() - stats.mtime.getTime();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Estimate the LLM cost for a full generation run.
+ * Uses per-stage token breakdown for accuracy.
+ */
+export function estimateCost(
+  llmContext: LLMContext,
+  provider: string,
+  model: string,
+): { tokens: number; cost: number } {
+  const OVERHEAD = LLM_SYSTEM_PROMPT_OVERHEAD_TOKENS;
+  const OUTPUT_RATIO = GENERATION_OUTPUT_RATIO;
+
+  const phase2Files = llmContext.phase2_deep.files;
+  const phase2Total = phase2Files.reduce((s, f) => s + f.tokens, 0);
+  const fileOverhead = OVERHEAD * phase2Files.length;
+
+  const stage1Input = (llmContext.phase1_survey.estimatedTokens ?? DEFAULT_SURVEY_ESTIMATED_TOKENS) + OVERHEAD;
+  const stage2Input = phase2Total + fileOverhead;
+  const stage3Input = phase2Total + fileOverhead;
+  const stage4Input = Math.ceil(phase2Total * 0.5) + OVERHEAD;
+  const stage5Input = Math.ceil((stage1Input + stage2Input) * 0.3) + OVERHEAD;
+
+  const totalInput = stage1Input + stage2Input + stage3Input + stage4Input + stage5Input;
+  const totalOutput = Math.ceil(totalInput * OUTPUT_RATIO);
+
+  const modelPricing = lookupPricing(provider, model);
+  const cost = (totalInput / 1_000_000) * modelPricing.input
+             + (totalOutput / 1_000_000) * modelPricing.output;
+
+  return { tokens: totalInput + totalOutput, cost };
 }

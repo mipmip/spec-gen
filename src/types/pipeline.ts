@@ -103,6 +103,7 @@ export interface ExtractedService {
   dependencies: string[];
   sideEffects: string[];
   domain: string;
+  locationFile?: string;
   subSpecs?: ServiceSubSpec[];
 }
 
@@ -175,6 +176,8 @@ export interface PipelineOptions {
   rootPath?: string;
   skipStages?: string[];
   resumeFrom?: string;
+  /** Force regeneration from scratch, ignoring any cached stage results on disk */
+  force?: boolean;
   maxRetries?: number;
   saveIntermediate?: boolean;
   generateADRs?: boolean;

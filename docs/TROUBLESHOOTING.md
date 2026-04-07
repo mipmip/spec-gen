@@ -120,6 +120,17 @@ Settings are resolved in this order (first match wins):
 
 ## Generation Issues
 
+### Invalid Schema for response_format (OpenAI)
+
+**Problem**: `Invalid schema for response_format 'response': schema must be a JSON Schema of 'type: "object"', got 'type: "array"'`
+
+**Cause**: Fixed in v1.2.7. Earlier versions sent top-level `type: "array"` schemas to OpenAI's structured output API, which requires `type: "object"` at the root.
+
+**Solution**: Upgrade to v1.2.7+:
+```bash
+npm install -g spec-gen-cli@latest
+```
+
 ### No Domains Detected
 
 **Problem**: spec-gen says "Could not identify any domains"

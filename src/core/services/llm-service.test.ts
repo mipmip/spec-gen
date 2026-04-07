@@ -2,7 +2,8 @@
  * LLM Service Tests
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'child_process';
 import { mkdir, rm, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,7 +12,11 @@ import {
   MockLLMProvider,
   AnthropicProvider,
   OpenAIProvider,
+  OpenAICompatibleProvider,
+  GeminiProvider,
   ClaudeCodeProvider,
+  GeminiCLIProvider,
+  CursorAgentProvider,
   MistralVibeProvider,
   createMockLLMService,
   createLLMService,
@@ -20,6 +25,22 @@ import {
   parseRetryAfterMs,
   type CompletionRequest,
 } from './llm-service.js';
+
+// Mock child_process for CLI provider tests (hoisted before module load)
+vi.mock('child_process', () => ({ execFileSync: vi.fn() }));
+
+// ── fetch mock helpers ────────────────────────────────────────────────────
+
+function mockResponse(body: object, status = 200, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...headers },
+  });
+}
+
+function mockErrorResponse(body: string, status: number, headers: Record<string, string> = {}): Response {
+  return new Response(body, { status, headers });
+}
 
 // ============================================================================
 // TEST HELPERS
@@ -621,14 +642,14 @@ describe('Integration Tests (skipped without API keys)', () => {
   describe('CLI Providers', () => {
     it('should create ClaudeCode provider', () => {
       const provider = new ClaudeCodeProvider();
-      
+
       expect(provider.name).toBe('claude-code');
       expect(provider.maxContextTokens).toBe(200_000);
     });
 
     it('should create MistralVibe provider', () => {
       const provider = new MistralVibeProvider();
-      
+
       expect(provider.name).toBe('mistral-vibe');
       expect(provider.maxContextTokens).toBe(128_000);
     });
@@ -641,6 +662,15 @@ describe('Integration Tests (skipped without API keys)', () => {
     it('should create service with mistral-vibe provider', () => {
       const service = createLLMService({ provider: 'mistral-vibe' });
       expect(service.getProviderName()).toBe('mistral-vibe');
+    });
+
+    it('should create service with cursor-agent provider', () => {
+      const service = createLLMService({ provider: 'cursor-agent' });
+      expect(service.getProviderName()).toBe('cursor-agent');
+    });
+
+    it('rejects cursor as unknown provider id', () => {
+      expect(() => createLLMService({ provider: 'cursor' as never })).toThrow(/Unknown provider/);
     });
 
     it('should support custom models for CLI providers', () => {
@@ -679,6 +709,12 @@ describe('lookupPricing', () => {
 
   it('returns zero-cost for claude-code provider', () => {
     const p = lookupPricing('claude-code', 'any-model');
+    expect(p.input).toBe(0);
+    expect(p.output).toBe(0);
+  });
+
+  it('returns zero-cost for cursor-agent provider', () => {
+    const p = lookupPricing('cursor-agent', 'any-model');
     expect(p.input).toBe(0);
     expect(p.output).toBe(0);
   });
@@ -747,5 +783,494 @@ describe('parseRetryAfterMs', () => {
     const dateStr = `${past.getUTCFullYear()}-${pad(past.getUTCMonth()+1)}-${pad(past.getUTCDate())} ${pad(past.getUTCHours())}:${pad(past.getUTCMinutes())}:${pad(past.getUTCSeconds())} UTC`;
     const body = `Limit resets at: ${dateStr}`;
     expect(parseRetryAfterMs(body)).toBeUndefined();
+  });
+});
+
+// ============================================================================
+// AnthropicProvider — fetch-based
+// ============================================================================
+
+describe('AnthropicProvider', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const SUCCESS_BODY = {
+    content: [{ type: 'text', text: 'Hello world' }],
+    usage: { input_tokens: 10, output_tokens: 5 },
+    model: 'claude-3-5-sonnet-20241022',
+    stop_reason: 'end_turn',
+  };
+
+  it('returns content and token usage on success', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY)));
+    const provider = new AnthropicProvider('key');
+    const result = await provider.generateCompletion({ systemPrompt: 'sys', userPrompt: 'hello' });
+    expect(result.content).toBe('Hello world');
+    expect(result.usage.inputTokens).toBe(10);
+    expect(result.usage.outputTokens).toBe(5);
+    expect(result.finishReason).toBe('stop');
+  });
+
+  it('maps max_tokens stop reason to "length"', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ ...SUCCESS_BODY, stop_reason: 'max_tokens' })));
+    const provider = new AnthropicProvider('key');
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.finishReason).toBe('length');
+  });
+
+  it('throws retryable error on 429', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockErrorResponse('rate limited', 429, { 'retry-after': '2' })));
+    const provider = new AnthropicProvider('key');
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(true);
+    expect((err as { retryAfterMs?: number }).retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it('throws retryable error on 500', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockErrorResponse('server error', 500)));
+    const provider = new AnthropicProvider('key');
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(true);
+  });
+
+  it('throws non-retryable error on 400', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockErrorResponse('bad request', 400)));
+    const provider = new AnthropicProvider('key');
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(false);
+  });
+
+  it('accepts custom baseUrl', () => {
+    expect(() => new AnthropicProvider('key', undefined, 'https://custom.api.com/v1')).not.toThrow();
+  });
+});
+
+// ============================================================================
+// OpenAIProvider — fetch-based
+// ============================================================================
+
+describe('OpenAIProvider', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const SUCCESS_BODY = {
+    choices: [{ message: { content: 'OpenAI response' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 },
+    model: 'gpt-4o',
+  };
+
+  it('returns content and token usage on success', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY)));
+    const provider = new OpenAIProvider('key');
+    const result = await provider.generateCompletion({ systemPrompt: 'sys', userPrompt: 'hello' });
+    expect(result.content).toBe('OpenAI response');
+    expect(result.usage.totalTokens).toBe(30);
+    expect(result.finishReason).toBe('stop');
+  });
+
+  it('maps "length" finish reason correctly', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({
+      ...SUCCESS_BODY, choices: [{ message: { content: 'cut' }, finish_reason: 'length' }],
+    })));
+    const provider = new OpenAIProvider('key');
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.finishReason).toBe('length');
+  });
+
+  it('sends json_schema response_format when jsonSchema provided', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAIProvider('key');
+    const schema = { type: 'object', properties: { name: { type: 'string' } } };
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi', responseFormat: 'json', jsonSchema: schema });
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.response_format.type).toBe('json_schema');
+    expect(body.response_format.json_schema.schema).toEqual(schema);
+  });
+
+  it('sends json_object response_format when responseFormat=json without schema', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAIProvider('key');
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi', responseFormat: 'json' });
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.response_format.type).toBe('json_object');
+  });
+
+  it('throws retryable error on 429', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockErrorResponse('rate limited', 429)));
+    const provider = new OpenAIProvider('key');
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(true);
+  });
+});
+
+// ============================================================================
+// OpenAICompatibleProvider — fetch-based
+// ============================================================================
+
+describe('OpenAICompatibleProvider', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const SUCCESS_BODY = {
+    choices: [{ message: { content: 'compat response' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+    model: 'mistral-large-latest',
+  };
+
+  it('returns content on success', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY)));
+    const provider = new OpenAICompatibleProvider('key', 'https://api.mistral.ai/v1');
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.content).toBe('compat response');
+    expect(result.model).toBe('mistral-large-latest');
+  });
+
+  it('sends json_schema response_format when jsonSchema provided', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAICompatibleProvider('key', 'https://api.mistral.ai/v1');
+    const schema = { type: 'array' };
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi', responseFormat: 'json', jsonSchema: schema });
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.response_format.type).toBe('json_schema');
+  });
+
+  it('throws retryable error on 500', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockErrorResponse('server error', 500)));
+    const provider = new OpenAICompatibleProvider('key', 'https://api.mistral.ai/v1');
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(true);
+  });
+
+  it('throws on invalid baseUrl', () => {
+    expect(() => new OpenAICompatibleProvider('key', 'not-a-url')).toThrow('Invalid API base URL');
+  });
+});
+
+// ============================================================================
+// GeminiProvider — fetch-based
+// ============================================================================
+
+describe('GeminiProvider', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const SUCCESS_BODY = {
+    candidates: [{ content: { parts: [{ text: 'Gemini response' }], role: 'model' }, finishReason: 'STOP' }],
+    usageMetadata: { promptTokenCount: 15, candidatesTokenCount: 8, totalTokenCount: 23 },
+  };
+
+  it('returns content and token usage on success', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY)));
+    const provider = new GeminiProvider('key');
+    const result = await provider.generateCompletion({ systemPrompt: 'sys', userPrompt: 'hello' });
+    expect(result.content).toBe('Gemini response');
+    expect(result.usage.inputTokens).toBe(15);
+    expect(result.usage.outputTokens).toBe(8);
+    expect(result.finishReason).toBe('stop');
+  });
+
+  it('maps MAX_TOKENS finish reason to "length"', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({
+      ...SUCCESS_BODY, candidates: [{ ...SUCCESS_BODY.candidates[0], finishReason: 'MAX_TOKENS' }],
+    })));
+    const provider = new GeminiProvider('key');
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.finishReason).toBe('length');
+  });
+
+  it('throws retryable error on 429 with retry-after', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockErrorResponse('quota exceeded', 429, { 'retry-after': '5' })));
+    const provider = new GeminiProvider('key');
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect((err as { retryable?: boolean }).retryable).toBe(true);
+    expect((err as { retryAfterMs?: number }).retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it('appends json responseSchema to generationConfig when jsonSchema provided', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(SUCCESS_BODY));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new GeminiProvider('key');
+    const schema = { type: 'object' };
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi', responseFormat: 'json', jsonSchema: schema });
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.generationConfig.responseSchema).toEqual(schema);
+    expect(body.generationConfig.responseMimeType).toBe('application/json');
+  });
+});
+
+// ============================================================================
+// MistralVibeProvider — CLI-based (mocked execFileSync)
+// ============================================================================
+
+describe('MistralVibeProvider', () => {
+
+
+
+  it('parses array shape [{role: assistant, content}]', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'world' },
+    ]));
+    const provider = new MistralVibeProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.content).toBe('world');
+  });
+
+  it('parses {result, usage} shape', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({
+      result: 'structured output',
+      usage: { input_tokens: 10, output_tokens: 5 },
+    }));
+    const provider = new MistralVibeProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.content).toBe('structured output');
+    expect(result.usage.inputTokens).toBe(10);
+    expect(result.usage.outputTokens).toBe(5);
+  });
+
+  it('parses {message} shape', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ message: 'from message field' }));
+    const provider = new MistralVibeProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.content).toBe('from message field');
+  });
+
+  it('parses {text} shape', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ text: 'from text field' }));
+    const provider = new MistralVibeProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.content).toBe('from text field');
+  });
+
+  it('falls back to raw text when output is not JSON', async () => {
+    vi.mocked(execFileSync).mockReturnValue('plain text response');
+    const provider = new MistralVibeProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.content).toBe('plain text response');
+  });
+
+  it('throws non-retryable error when CLI fails', async () => {
+    vi.mocked(execFileSync).mockImplementation(() => { throw Object.assign(new Error('not found'), { stderr: 'command not found' }); });
+    const provider = new MistralVibeProvider();
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect(err.message).toContain('mistral-vibe CLI failed');
+    expect((err as { retryable?: boolean }).retryable).toBe(false);
+  });
+
+  it('uses --agent flag when model is specified', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ result: 'ok' }));
+    const provider = new MistralVibeProvider('mistral-small');
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    const args = vi.mocked(execFileSync).mock.calls[vi.mocked(execFileSync).mock.calls.length - 1][1] as string[];
+    expect(args).toContain('--agent');
+    expect(args).toContain('mistral-small');
+  });
+});
+
+// ============================================================================
+// ClaudeCodeProvider — CLI-based (mocked execFileSync)
+// ============================================================================
+
+describe('ClaudeCodeProvider', () => {
+
+
+
+  it('returns content from {result} JSON output', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({
+      result: 'Claude says hi',
+      usage: { input_tokens: 20, output_tokens: 8 },
+    }));
+    const provider = new ClaudeCodeProvider();
+    const result = await provider.generateCompletion({ systemPrompt: 'sys', userPrompt: 'hi' });
+    expect(result.content).toBe('Claude says hi');
+    expect(result.usage.inputTokens).toBe(20);
+    expect(result.finishReason).toBe('stop');
+    expect(result.model).toBe('claude-code');
+  });
+
+  it('throws when is_error=true', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ result: 'something broke', is_error: true }));
+    const provider = new ClaudeCodeProvider();
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect(err.message).toContain('claude CLI error');
+    expect((err as { retryable?: boolean }).retryable).toBe(false);
+  });
+
+  it('throws on non-JSON output', async () => {
+    vi.mocked(execFileSync).mockReturnValue('not json at all');
+    const provider = new ClaudeCodeProvider();
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect(err.message).toContain('non-JSON output');
+  });
+
+  it('throws non-retryable error when CLI fails', async () => {
+    vi.mocked(execFileSync).mockImplementation(() => { throw Object.assign(new Error('spawn error'), { stderr: 'not found' }); });
+    const provider = new ClaudeCodeProvider();
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect(err.message).toContain('claude CLI failed');
+    expect((err as { retryable?: boolean }).retryable).toBe(false);
+  });
+
+  it('passes --model flag when a claude-* model is specified', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ result: 'ok' }));
+    const provider = new ClaudeCodeProvider('claude-sonnet-4-6');
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    const args = vi.mocked(execFileSync).mock.calls[vi.mocked(execFileSync).mock.calls.length - 1][1] as string[];
+    expect(args).toContain('--model');
+    expect(args).toContain('claude-sonnet-4-6');
+  });
+
+  it('ignores non-claude model names', () => {
+    // Should not pass --model for non-claude model names
+    const provider = new ClaudeCodeProvider('mistral-large-latest');
+    expect((provider as unknown as { model: string | undefined }).model).toBeUndefined();
+  });
+});
+
+// ============================================================================
+// GeminiCLIProvider — CLI-based (mocked execFileSync)
+// ============================================================================
+
+describe('GeminiCLIProvider', () => {
+
+
+
+  it('returns content from {response} JSON output', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({
+      response: 'Gemini CLI response',
+      stats: { models: { 'gemini-2.0-flash': { tokens: { input: 12, candidates: 6, total: 18 } } } },
+    }));
+    const provider = new GeminiCLIProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.content).toBe('Gemini CLI response');
+    expect(result.usage.inputTokens).toBe(12);
+    expect(result.usage.outputTokens).toBe(6);
+    expect(result.model).toBe('gemini-2.0-flash');
+  });
+
+  it('aggregates tokens across multiple models', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({
+      response: 'multi-model',
+      stats: { models: {
+        'model-a': { tokens: { input: 10, candidates: 4, total: 14 } },
+        'model-b': { tokens: { input: 5, candidates: 2, total: 7 } },
+      } },
+    }));
+    const provider = new GeminiCLIProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.usage.inputTokens).toBe(15);
+    expect(result.usage.outputTokens).toBe(6);
+  });
+
+  it('falls back to raw text when output is not JSON', async () => {
+    vi.mocked(execFileSync).mockReturnValue('plain gemini response');
+    const provider = new GeminiCLIProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' });
+    expect(result.content).toBe('plain gemini response');
+  });
+
+  it('throws non-retryable error when CLI fails', async () => {
+    vi.mocked(execFileSync).mockImplementation(() => { throw new Error('gemini not found'); });
+    const provider = new GeminiCLIProvider();
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'hi' }).catch(e => e);
+    expect(err.message).toContain('gemini CLI failed');
+    expect((err as { retryable?: boolean }).retryable).toBe(false);
+  });
+});
+
+// ============================================================================
+// CursorAgentProvider — CLI-based (mocked execFileSync)
+// ============================================================================
+
+describe('CursorAgentProvider', () => {
+  it('returns content from { result } JSON output', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({
+      result: 'cursor says hi',
+      usage: { input_tokens: 3, output_tokens: 2 },
+    }));
+    const provider = new CursorAgentProvider();
+    const result = await provider.generateCompletion({ systemPrompt: 'sys', userPrompt: 'hi' });
+    expect(result.content).toBe('cursor says hi');
+    expect(result.usage.inputTokens).toBe(3);
+    expect(result.usage.outputTokens).toBe(2);
+    expect(result.model).toBe('cursor-agent');
+  });
+
+  it('returns content from { response } JSON output', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ response: 'via response field' }));
+    const provider = new CursorAgentProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'x' });
+    expect(result.content).toBe('via response field');
+  });
+
+  it('throws on CLI is_error', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ result: 'bad', is_error: true }));
+    const provider = new CursorAgentProvider();
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'x' }).catch(e => e);
+    expect(err.message).toContain('cursor-agent CLI error');
+    expect((err as { retryable?: boolean }).retryable).toBe(false);
+  });
+
+  it('falls back to raw text when output is not JSON', async () => {
+    vi.mocked(execFileSync).mockReturnValue('plain cursor output');
+    const provider = new CursorAgentProvider();
+    const result = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'x' });
+    expect(result.content).toBe('plain cursor output');
+  });
+
+  it('throws non-retryable error when CLI fails', async () => {
+    vi.mocked(execFileSync).mockImplementation(() => { throw Object.assign(new Error('spawn error'), { stderr: 'not found' }); });
+    const provider = new CursorAgentProvider();
+    const err = await provider.generateCompletion({ systemPrompt: '', userPrompt: 'x' }).catch(e => e);
+    expect(err.message).toContain('cursor-agent CLI failed');
+    expect((err as { retryable?: boolean }).retryable).toBe(false);
+  });
+
+  it('passes --model when configured', async () => {
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ result: 'ok' }));
+    const provider = new CursorAgentProvider('gpt-4o');
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'go' });
+    const args = vi.mocked(execFileSync).mock.calls[vi.mocked(execFileSync).mock.calls.length - 1][1] as string[];
+    expect(args).toContain('--model');
+    expect(args).toContain('gpt-4o');
+  });
+
+  it('uses CURSOR_AGENT_CLI for binary path', async () => {
+    const prev = process.env.CURSOR_AGENT_CLI;
+    process.env.CURSOR_AGENT_CLI = '/opt/cursor/agent-bin';
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ result: 'x' }));
+    const provider = new CursorAgentProvider();
+    await provider.generateCompletion({ systemPrompt: '', userPrompt: 'y' });
+    const bin = vi.mocked(execFileSync).mock.calls[vi.mocked(execFileSync).mock.calls.length - 1][0] as string;
+    expect(bin).toBe('/opt/cursor/agent-bin');
+    if (prev === undefined) delete process.env.CURSOR_AGENT_CLI;
+    else process.env.CURSOR_AGENT_CLI = prev;
+  });
+});
+
+// ============================================================================
+// LLMService.completeJSON — array unwrapping
+// ============================================================================
+
+describe('LLMService.completeJSON — array unwrapping', () => {
+  it('unwraps single-key object whose value is an array', async () => {
+    const { service, provider } = createMockLLMService();
+    provider.setDefaultResponse(JSON.stringify({ entities: [1, 2, 3] }));
+    const result = await service.completeJSON<number[]>({ systemPrompt: 'sys', userPrompt: 'list' });
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toEqual([1, 2, 3]);
+  });
+
+  it('does not unwrap multi-key objects', async () => {
+    const { service, provider } = createMockLLMService();
+    provider.setDefaultResponse(JSON.stringify({ a: [1], b: [2] }));
+    const result = await service.completeJSON<{ a: number[]; b: number[] }>({ systemPrompt: 'sys', userPrompt: 'obj' });
+    expect(result).toEqual({ a: [1], b: [2] });
+  });
+
+  it('appends JSON instruction when systemPrompt has no "json" keyword', async () => {
+    const { service, provider } = createMockLLMService();
+    provider.setDefaultResponse('{"ok":true}');
+    await service.completeJSON({ systemPrompt: 'You are helpful', userPrompt: 'go' });
+    expect(provider.callHistory[0].systemPrompt).toContain('valid JSON');
   });
 });

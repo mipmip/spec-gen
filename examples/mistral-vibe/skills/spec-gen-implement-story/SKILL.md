@@ -103,6 +103,7 @@ Use the results to ground the implementation in existing schemas/routes — the 
 
 ---
 
+
 ## Step 3 — Check the spec
 
 First, verify that OpenSpec specs exist:

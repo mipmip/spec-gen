@@ -9,7 +9,7 @@ import { Command } from 'commander';
 import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../../utils/logger.js';
-import { fileExists, formatDuration, parseList } from '../../utils/command-helpers.js';
+import { fileExists, formatDuration, parseList, resolveLLMProvider } from '../../utils/command-helpers.js';
 import {
   DEFAULT_DRIFT_MAX_FILES,
   SPEC_GEN_DIR,
@@ -397,29 +397,26 @@ Pre-commit hook:
       // Create LLM service if --use-llm is specified
       let llm: LLMService | undefined;
       if (opts.useLlm) {
-        const anthropicKey = process.env.ANTHROPIC_API_KEY;
-        const openaiKey = process.env.OPENAI_API_KEY;
-
-        if (!anthropicKey && !openaiKey) {
+        const resolved = resolveLLMProvider(specGenConfig);
+        if (!resolved) {
           logger.error('No LLM API key found. --use-llm requires an API key.');
-          logger.discovery('Set ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable.');
-          logger.discovery('  export ANTHROPIC_API_KEY=sk-ant-...');
-          logger.discovery('  export OPENAI_API_KEY=sk-...');
+          logger.discovery('Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or OPENAI_COMPAT_API_KEY + OPENAI_COMPAT_BASE_URL.');
           process.exitCode = 1;
           return;
         }
 
-        const provider = anthropicKey ? 'anthropic' : 'openai';
         try {
           llm = createLLMService({
-            provider,
+            provider: resolved.provider,
+            model: specGenConfig.generation?.model,
+            openaiCompatBaseUrl: resolved.openaiCompatBaseUrl,
             apiBase: globalOpts.apiBase ?? specGenConfig.llm?.apiBase,
             sslVerify: globalOpts.insecure != null ? !globalOpts.insecure : specGenConfig.llm?.sslVerify ?? true,
             enableLogging: true,
             logDir: join(rootPath, SPEC_GEN_DIR, SPEC_GEN_LOGS_SUBDIR),
           });
           if (!opts.json) {
-            logger.discovery(`LLM enabled (${provider}) — gap issues will be semantically analyzed`);
+            logger.discovery(`LLM enabled (${resolved.provider}) — gap issues will be semantically analyzed`);
           }
         } catch (error) {
           logger.error(`Failed to create LLM service: ${(error as Error).message}`);

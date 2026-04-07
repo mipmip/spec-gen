@@ -151,10 +151,10 @@ export function FlatGraph({
               y1={s.y + ny * nr}
               x2={t.x - nx * (nr + 5)}
               y2={t.y - ny * (nr + 5)}
-              stroke={isSel ? 'var(--ac-primary)' : isAff ? '#f77c6a' : e.isType ? 'var(--ac-edge-type)' : 'var(--bd-edge)'}
+              stroke={isSel ? 'var(--ac-primary)' : isAff ? '#f77c6a' : e.isType ? 'var(--ac-edge-type)' : e.isCall ? 'var(--lc-cyan)' : 'var(--bd-edge)'}
               strokeWidth={isSel ? 1.5 : isAff ? 1.2 : 0.8}
-              strokeOpacity={isDimEdge ? 0.08 : isSel ? 0.9 : isAff ? 0.7 : e.isType ? 0.35 : 0.55}
-              strokeDasharray={e.isType ? '4 2' : undefined}
+              strokeOpacity={isDimEdge ? 0.08 : isSel ? 0.9 : isAff ? 0.7 : e.isType ? 0.35 : e.isCall ? 0.45 : 0.55}
+              strokeDasharray={e.isType ? '4 2' : e.isCall ? '6 3' : undefined}
               markerEnd={
                 isSel
                   ? 'url(#arr-sel)'

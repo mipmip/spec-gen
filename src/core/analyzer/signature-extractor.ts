@@ -22,7 +22,7 @@ export interface ExtractedSignature {
 
 export interface FileSignatureMap {
   path: string;        // relative path
-  language: string;    // 'Python', 'TypeScript', 'JavaScript', 'Go', 'Rust', 'Ruby', 'unknown'
+  language: string;    // 'Python', 'TypeScript', 'JavaScript', 'Go', 'Rust', 'Ruby', 'Swift', 'unknown'
   entries: ExtractedSignature[];
 }
 
@@ -51,6 +51,7 @@ export function detectLanguage(filePath: string): string {
     case 'cs':           return 'C#';
     case 'cpp': case 'cc': case 'cxx': case 'h': case 'hpp': return 'C++';
     case 'c':            return 'C';
+    case 'swift':        return 'Swift';
     default:             return 'unknown';
   }
 }
@@ -488,6 +489,69 @@ function extractCpp(content: string): ExtractedSignature[] {
 }
 
 // ============================================================================
+// SWIFT EXTRACTOR
+// ============================================================================
+
+function extractSwift(content: string): ExtractedSignature[] {
+  const entries: ExtractedSignature[] = [];
+  const lines = content.split('\n');
+
+  for (let i = 0; i < lines.length && entries.length < MAX_SIGS_PER_FILE; i++) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+
+    // Collect /// doc comment above the declaration
+    let docstring: string | undefined;
+    if (i > 0) {
+      let j = i - 1;
+      while (j >= 0 && lines[j].trim() === '') j--;
+      if (j >= 0 && lines[j].trim().startsWith('///')) {
+        docstring = lines[j].trim().slice(3).trim() || undefined;
+      }
+    }
+
+    // class / struct / actor / enum declaration
+    const typeMatch = trimmed.match(/^(?:public\s+|open\s+|internal\s+|private\s+|fileprivate\s+)*(?:final\s+)?(class|struct|actor|enum)\s+(\w+)/);
+    if (typeMatch) {
+      const keyword = typeMatch[1];
+      const name = typeMatch[2];
+      const kind: ExtractedSignature['kind'] = keyword === 'enum' ? 'type' : 'class';
+      entries.push({ kind, name, signature: `${keyword} ${name}`, docstring });
+      continue;
+    }
+
+    // protocol declaration
+    const protocolMatch = trimmed.match(/^(?:public\s+|internal\s+|private\s+|fileprivate\s+)*protocol\s+(\w+)/);
+    if (protocolMatch) {
+      entries.push({ kind: 'interface', name: protocolMatch[1], signature: `protocol ${protocolMatch[1]}`, docstring });
+      continue;
+    }
+
+    // func declaration (free or method)
+    const funcMatch = trimmed.match(/^(?:public\s+|open\s+|internal\s+|private\s+|fileprivate\s+|static\s+|class\s+|override\s+|mutating\s+)*(?:async\s+)?func\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)(?:\s*(?:async|throws|rethrows))?\s*(?:->\s*([^{]+))?/);
+    if (funcMatch) {
+      const name = funcMatch[1];
+      const params = compactParams(funcMatch[2]);
+      const ret = funcMatch[3]?.trim().replace(/\s+/g, ' ') ?? '';
+      const isMethod = line.startsWith('  ') || line.startsWith('\t');
+      const sig = `func ${name}(${params})${ret ? ' -> ' + ret : ''}`;
+      entries.push({ kind: isMethod ? 'method' : 'function', name, signature: isMethod ? '  ' + sig : sig, docstring });
+      continue;
+    }
+
+    // init declaration
+    const initMatch = trimmed.match(/^(?:public\s+|internal\s+|private\s+|fileprivate\s+|convenience\s+|required\s+)*init\s*(?:\?|!)?(?:<[^>]*>)?\s*\(/);
+    if (initMatch) {
+      const sig = 'init(' + (trimmed.split('(')[1]?.split(')')[0] ?? '') + ')';
+      entries.push({ kind: 'method', name: 'init', signature: '  ' + sig.slice(0, 80), docstring });
+      continue;
+    }
+  }
+
+  return entries;
+}
+
+// ============================================================================
 // GENERIC FALLBACK EXTRACTOR
 // ============================================================================
 
@@ -534,6 +598,9 @@ export function extractSignatures(filePath: string, content: string): FileSignat
       break;
     case 'C++':
       entries = extractCpp(content);
+      break;
+    case 'Swift':
+      entries = extractSwift(content);
       break;
     default:
       entries = extractGeneric(content);
