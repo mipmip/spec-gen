@@ -10,7 +10,6 @@ allowed-tools:
   - read_file
   - write_file
   - spec-gen-analyze-codebase
-  - spec-gen-execute-refactor
 ---
 
 # spec-gen: Plan Refactor
@@ -26,6 +25,20 @@ Trigger this skill whenever the user asks to **plan a refactoring** on a codebas
 
 **This skill modifies no code files.** It only produces `.spec-gen/refactor-plan.md`.
 To apply the plan, use the `spec-gen-execute-refactor` skill.
+
+---
+
+## ⚠️ Fundamental principle — each change is a complete mini-development
+
+**The plan must be written so that every entry in the change sequence is independently executable and testable.**
+
+Each change = one atomic edit → one diff verification → one full test run → ✅ or rollback.
+
+This is not a final gate at the end. Testing is a mandatory sub-step after **every single change**.
+The plan must make this cycle explicit and impossible to skip.
+
+**For Devstral Small 2**: each change must touch at most **50 contiguous lines** in the source file.
+If a logical extraction exceeds this limit, split it into smaller sub-changes, each with its own test gate.
 
 ---
 
@@ -184,15 +197,34 @@ For each candidate, note its role and strategy. Prefer candidates that already c
 
 Design an ordered sequence of atomic changes based on the strategy from Step 4.
 
-**Each change is a complete unit: edit → verify diff → run tests → mark done. Tests are not a final gate; they are a mandatory sub-step after every single change. Write the plan to reflect this explicitly.**
+### Size constraint (mandatory for Devstral Small 2)
 
-Each change must specify:
+**Each change must touch at most 50 contiguous lines** in the source file.
+If a logical extraction requires moving more than 50 lines in one pass, split it into sub-changes:
+- Sub-change A: extract the inner block (≤ 50 lines)
+- Sub-change B: extract the outer wrapper (≤ 50 lines)
+Each sub-change gets its own test gate. Never group two sub-changes before testing.
+
+### Each change must specify
 
 - **What**: the exact block to move (line range or description)
+- **Lines touched**: estimated count in source file — must be ≤ 50
 - **New name**: the function or method name to give it
 - **Target file**: existing or new file (with justification)
 - **Target class** (if applicable)
 - **Call sites to update**: list each `file:line`
+- **Test gate**: exact test command to run after this change
+
+### Mini-development cycle per change (write this explicitly in the plan)
+
+```
+READ plan entry → EDIT (targeted, ≤ 50 lines) → DIFF verify → TEST
+  ├─ green → mark ✅, next change
+  └─ red   → git checkout HEAD -- <file>, diagnose, retry
+             after 3 failed retries → STOP, report to user
+```
+
+The plan must show this cycle in the change sequence, not just in a footnote.
 
 **Rules per strategy:**
 
@@ -218,7 +250,7 @@ Generated: <ISO date>
 Workflow: /spec-gen-plan-refactor → /spec-gen-execute-refactor
 
 ## Target
-- **Function**: <name>
+- **Function**: <n>
 - **File**: <relative path>
 - **Lines**: <start>–<end>
 - **Risk score**: <0–100>
@@ -244,15 +276,19 @@ Workflow: /spec-gen-plan-refactor → /spec-gen-execute-refactor
 - **Test command**: <exact command>
 
 ## Change sequence
-Apply in order. Run tests after each step.
+Each change is a complete mini-development: edit → diff → test → ✅ or rollback.
+Never advance to the next change without a green test gate.
 
 ### Change 1 — <short label>
 - **What**: extract lines <start>–<end> (logic: <one-line description>)
-- **New function name**: `<name>`
+- **Lines touched in source**: ~<N> lines (must be ≤ 50)
+- **New function name**: `<n>`
 - **Target file**: `<path>` (<new file | existing file — reason>)
 - **Target class**: `<ClassName>` or none
 - **Call sites to update**: <list each file:line>
 - **Expected diff**: +<N> lines in <target file>, -<M> lines in <source file>
+- **Test gate**: `<exact test command>`
+- **Retry limit**: 3 attempts — if still red after 3, stop and report
 
 ### Change 2 — <short label>
 ...
@@ -277,5 +313,6 @@ Once the file is written:
 - **No code modifications** in this workflow
 - Always read the source file to confirm exact line numbers
 - Never leave a section empty or as "TBD"
+- Each change in the plan must include a test gate and a ≤ 50-line scope
 - Prefer candidates with higher coverage when scores are otherwise close
 - If the user does not pick a target, default to the top candidate

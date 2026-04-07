@@ -29,6 +29,39 @@ The file `.spec-gen/refactor-plan.md` must exist.
 
 ---
 
+## ⚠️ Fundamental principle — each change is a complete mini-development
+
+Each change in the plan is treated as an **independent, self-contained development unit**.
+The cycle for every single change, without exception:
+
+```
+READ plan entry
+  → EDIT  (targeted tool, ≤ 50 lines touched)
+  → DIFF  (git diff --stat + git diff — verify no lost code)
+  → TEST  (run the test gate from the plan)
+     ├─ green → mark ✅ in plan, move to next change
+     └─ red   → git checkout HEAD -- <file>
+                diagnose the failure
+                retry from EDIT (attempt 2, then 3)
+                if still red after 3 attempts → STOP (see circuit-breaker below)
+```
+
+**Never accumulate broken state. Never skip the test gate. Never batch two changes before testing.**
+
+### Circuit-breaker — 3 failed attempts
+
+If a change fails its test gate 3 times in a row, stop immediately and report:
+
+> "Change N (`<label>`) failed after 3 attempts. The working tree has been restored to the last green state.
+> Options:
+> a) Split this change into smaller sub-changes (≤ 50 lines each) and update the plan
+> b) Return to planning (`/spec-gen-plan-refactor`) to redesign this step
+> c) Skip this change and continue — note the acceptance criteria may not be fully met"
+
+Do not attempt a 4th retry without explicit user instruction.
+
+---
+
 ## Step 1 — Read the plan
 
 Read `.spec-gen/refactor-plan.md` from the project directory.
@@ -45,7 +78,7 @@ Extract and display a summary:
 
 **Ask the user to confirm before proceeding.**
 
-> **Execution mode**: once confirmed, execute all changes in the plan **without asking for permission between steps**. The only valid reasons to pause mid-execution are: (a) a test fails, (b) you detect potentially lost code (`git diff` shows far more deletions than additions with no new file), or (c) Step 6 is explicitly requested. Any other pause is non-compliant with this skill.
+> **Execution mode**: once confirmed, execute all changes in the plan **without asking for permission between steps**. The only valid reasons to pause mid-execution are: (a) a test fails and 3 retries are exhausted (circuit-breaker), (b) you detect potentially lost code (`git diff` shows far more deletions than additions with no new file created), or (c) Step 6 is explicitly requested. Any other pause is non-compliant with this skill.
 
 ---
 
@@ -72,7 +105,7 @@ If coverage is below 40%:
 Only continue past this point with **explicit user confirmation**.
 
 **Large file warning**: if the target function spans more than 300 lines:
-> "This function is X lines long. Small models (< 13B parameters) may lose code when editing files of this size in a single pass. Recommended approach: apply Change 1 from the plan (smallest extraction) first to reduce the target below 200 lines."
+> "This function is X lines long. Devstral Small 2 may lose code when editing files of this size in a single pass. The plan must decompose each change to ≤ 50 lines. Verify the plan respects this before continuing."
 
 ---
 
@@ -91,46 +124,69 @@ Fill in the `Restore point` section of `.spec-gen/refactor-plan.md` with the cur
 
 ---
 
-## Step 4 — Apply changes (one at a time)
+## Step 4 — Apply changes (mini-development loop)
 
-**Before each change**, re-read `.spec-gen/refactor-plan.md` to confirm:
-- Which change you are on
+For **each change** in the plan, execute the full mini-development cycle below.
+Do not move to the next change until the current one is marked ✅.
+
+### Before each change
+
+Re-read `.spec-gen/refactor-plan.md` to confirm:
+- Which change you are on (check for ✅ markers)
 - Exactly what to extract, where to put it, and which call sites to update
+- The test gate command for this specific change
 
 ### Editing tool rule
 
 Always prefer a targeted edit tool (`replace_in_file`, `str_replace_based_edit`, `apply_diff`) over a full-file rewrite (`write_to_file`). Only use `write_to_file` if the file is under 100 lines. If a change seems to require `write_to_file` on a larger file, stop and split it into smaller targeted edits.
 
-**Small model constraint**: if the model is under 13B parameters (Mistral Small, Phi, Gemma…), each edit must touch a contiguous block of at most 50 lines. Split if needed.
+**Devstral Small 2 constraint**: each edit must touch a contiguous block of at most **50 lines**. If the planned change exceeds this, split it into sub-changes before proceeding — do not attempt an oversized edit.
 
-### For each change in the plan:
+### Mini-development cycle (execute for each change)
 
-1. **Read the source file** around the lines to extract (do not rely on memory).
+**Attempt counter**: reset to 1 at the start of each new change.
 
-2. **Apply the edit**:
-   - Extract or move the identified block
-   - Place it in the target file and target class specified in the plan
-   - If the target file is new, create it with only the extracted code
-   - Update all call sites listed in the plan
+**1 — READ**
+Re-read the source file around the lines to extract. Do not rely on memory or on earlier reads — the file may have changed from previous edits.
 
-3. **Verify the diff** before running tests:
-   ```bash
-   git diff --stat   # only the expected files should appear
-   git diff          # scan deleted lines (-) and confirm each removal is
-                     # intentional — moved, not silently dropped.
-                     # If deleted lines >> added lines with no new file
-                     # created, code was likely lost — abort immediately.
-   ```
+**2 — EDIT**
+- Extract or move the identified block (≤ 50 lines)
+- Place it in the target file and target class specified in the plan
+- If the target file is new, create it with only the extracted code
+- Update all call sites listed in the plan
 
-4. **Run the test suite** (command from the plan). If any test fails, restore immediately:
-   ```bash
-   git checkout HEAD -- <file>
-   ```
-   Do **not** accumulate broken state before restoring.
+**3 — DIFF**
+Verify the edit before running tests:
+```bash
+git diff --stat   # only the expected files should appear
+git diff          # scan deleted lines (−) and confirm each removal is
+                  # intentional — moved, not silently dropped.
+                  # If deleted lines >> added lines with no new file
+                  # created, code was likely lost — abort immediately.
+```
 
-5. **Mark the change as done** in `.spec-gen/refactor-plan.md` by appending `✅` to the change heading, then proceed to the next one.
+If the diff shows unexpected files or lost code (deletions >> additions, no new file):
+```bash
+git checkout HEAD -- <file>
+```
+Then re-examine the plan and retry from step 2 (counts as an attempt).
 
-Repeat until all changes in the plan are marked ✅.
+**4 — TEST**
+Run the test gate from the plan entry. This is the exact command specified for this change.
+
+```
+Test result?
+├─ GREEN → go to step 5 (mark done)
+└─ RED   → git checkout HEAD -- <file>
+           increment attempt counter
+           if attempts < 3:
+             diagnose the failure, adjust the edit, go back to step 2
+           if attempts == 3:
+             STOP — trigger circuit-breaker (see above)
+```
+
+**5 — MARK DONE**
+Append `✅` to the change heading in `.spec-gen/refactor-plan.md`, then proceed to the next change.
 
 ---
 
@@ -155,7 +211,7 @@ Check each acceptance criterion from the plan:
 - Function is no longer in the top-5 list
 - Full test suite passes
 
-If not, investigate and iterate (add a new change to the plan if needed).
+If not, investigate and iterate (add a new change to the plan if needed, respecting the ≤ 50 line constraint).
 
 Run the full test suite one final time to confirm the refactored state is clean.
 
@@ -199,7 +255,7 @@ Build a table of mismatches and present it before touching any code:
 
 Only renames with `confidence: "llm"` should be proposed automatically. Flag `confidence: "heuristic"` entries for manual verification first.
 
-**Wait for explicit user approval of the full rename table before applying any change. Apply renames one file at a time and run tests after each.**
+**Wait for explicit user approval of the full rename table before applying any change. Apply renames one file at a time, run tests after each, and respect the ≤ 50-line edit constraint.**
 
 ---
 
@@ -211,5 +267,7 @@ Only renames with `confidence: "llm"` should be proposed automatically. Flag `co
 - Always verify the diff before running tests
 - Never proceed to Step 6 without explicit user request
 - Always flag potentially lost code (deleted lines >> added lines with no new file created)
-- Never ask for confirmation between steps — only pause for failures or lost-code signals
+- Never ask for confirmation between steps — only pause for circuit-breaker or lost-code signals
 - Never continue on a red baseline, regardless of whether failures appear pre-existing
+- Never attempt more than 3 retries on a single change without user input
+- Each edit must touch ≤ 50 contiguous lines — split if needed, never skip this constraint
