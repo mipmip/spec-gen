@@ -923,10 +923,52 @@ export class OpenSpecFormatGenerator {
   }
 
   /**
+   * Infer a spec-gen-test annotation from scenario name and THEN clause.
+   * Returns null when no annotation is worth emitting (all defaults).
+   */
+  private inferTestAnnotation(scenarioName: string, then: string): string | null {
+    const text = `${scenarioName} ${then}`.toLowerCase();
+    const tags: string[] = [];
+    let priority: 'high' | 'low' | null = null;
+
+    // Tag: smoke — happy-path / successful scenarios
+    // Use \b to avoid matching "valid" inside "invalid"
+    if (/success|\bvalid(?:ation)?\b|happy|creat|register|accept/.test(text)) {
+      tags.push('smoke');
+    }
+    // Tag: regression — error / failure / rejection scenarios
+    if (/invalid|error|fail|missing|reject|unauthori|forbidden|duplicate|conflict|expired|wrong/.test(text)) {
+      tags.push('regression');
+    }
+    // Priority: high — security, auth, payment, permissions
+    if (/auth|login|logout|jwt|token|password|payment|billing|permission|role|security|access/.test(text)) {
+      priority = 'high';
+    }
+    // Priority: low — legacy, deprecated, backwards-compat
+    if (/legacy|deprecated|backcompat|backward/.test(text)) {
+      priority = 'low';
+    }
+
+    const parts: string[] = [];
+    if (priority) parts.push(`priority=${priority}`);
+    if (tags.length > 0) parts.push(`tags=${tags.join(',')}`);
+    if (parts.length === 0) return null;
+
+    return `<!-- spec-gen-test: ${parts.join(' ')} -->`;
+  }
+
+  /**
    * Add a scenario to the lines array
    */
   private addScenario(lines: string[], scenario: Scenario): void {
     lines.push(`#### Scenario: ${this.formatRequirementName(scenario.name)}`);
+
+    const annotation = this.inferTestAnnotation(
+      scenario.name ?? '',
+      scenario.then ?? ''
+    );
+    if (annotation) lines.push(annotation);
+
     lines.push(`- **GIVEN** ${this.wrapText(scenario.given ?? 'the system is in a valid state')}`);
     lines.push(`- **WHEN** ${this.wrapText(scenario.when ?? 'the operation is invoked')}`);
     lines.push(`- **THEN** ${this.wrapText(scenario.then ?? 'the expected outcome occurs')}`);
