@@ -954,7 +954,7 @@ export class OpenSpecFormatGenerator {
     if (tags.length > 0) parts.push(`tags=${tags.join(',')}`);
     if (parts.length === 0) return null;
 
-    return `<!-- spec-gen-test: ${parts.join(' ')} -->`;
+    return `<!-- spec-gen-test: ${parts.join(' ')} (auto) -->`;
   }
 
   /**
