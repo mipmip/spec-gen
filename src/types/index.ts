@@ -233,6 +233,7 @@ export interface DriftOptions extends GlobalOptions {
   uninstallHook: boolean;
   failOn: DriftSeverity;
   maxFiles: number;
+  suggestTests: boolean;
 }
 
 export interface DriftIssue {

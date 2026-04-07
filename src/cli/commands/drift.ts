@@ -29,6 +29,7 @@ import {
   buildADRMap,
   detectDrift,
 } from '../../core/drift/index.js';
+import { suggestTestsForDrift } from '../../core/drift/test-suggester.js';
 import { createLLMService } from '../../core/services/llm-service.js';
 import type { LLMService } from '../../core/services/llm-service.js';
 
@@ -292,6 +293,11 @@ export const driftCommand = new Command('drift')
     'Show detailed issue information',
     false
   )
+  .option(
+    '--suggest-tests',
+    'After detecting drift, list the test files that cover affected domains',
+    false
+  )
   .addHelpText(
     'after',
     `
@@ -332,6 +338,7 @@ Pre-commit hook:
       json: options.json ?? false,
       installHook: options.installHook ?? false,
       uninstallHook: options.uninstallHook ?? false,
+      suggestTests: options.suggestTests ?? false,
       failOn: (options.failOn as DriftSeverity) ?? 'warning',
       maxFiles: (() => {
         // Commander routes --max-files to parent when both parent and subcommand define it.
@@ -610,6 +617,28 @@ Pre-commit hook:
           await llm.saveLogs();
         } catch (logErr) {
           logger.debug(`LLM log save skipped: ${(logErr as Error).message}`);
+        }
+      }
+
+      // Suggest tests for drifted domains
+      if (opts.suggestTests && result.hasDrift && !opts.json) {
+        const suggestion = await suggestTestsForDrift(result, rootPath);
+        if (suggestion.domains.length > 0) {
+          logger.blank();
+          console.log('   Suggested tests for affected domains:');
+          console.log('');
+          for (const d of suggestion.domains) {
+            console.log(`   ${d.domain}  (${d.testFiles.length} file${d.testFiles.length !== 1 ? 's' : ''})`);
+            for (const f of d.testFiles) {
+              console.log(`     → ${f}`);
+            }
+          }
+          console.log('');
+          console.log(`   Run: npx vitest ${suggestion.allFiles.join(' ')}`);
+          logger.blank();
+        } else {
+          logger.blank();
+          logger.info('Suggest tests', 'No spec-gen test files found for affected domains. Run "spec-gen test" to generate them.');
         }
       }
 
