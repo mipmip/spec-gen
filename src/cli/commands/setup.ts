@@ -38,7 +38,7 @@ interface SkillEntry {
 interface SetupResult {
   tool: ToolName;
   rel: string;
-  created: boolean;
+  status: 'created' | 'updated' | 'skipped';
 }
 
 // ============================================================================
@@ -54,12 +54,13 @@ async function fileExists(p: string): Promise<boolean> {
   try { await access(p); return true; } catch { return false; }
 }
 
-async function copyIfAbsent(src: string, dest: string): Promise<boolean> {
-  if (await fileExists(dest)) return false;
+async function copyFile(src: string, dest: string, force: boolean): Promise<'created' | 'updated' | 'skipped'> {
+  const exists = await fileExists(dest);
+  if (exists && !force) return 'skipped';
   const content = await readFile(src, 'utf-8');
   await mkdir(dirname(dest), { recursive: true });
   await writeFile(dest, content, 'utf-8');
-  return true;
+  return exists ? 'updated' : 'created';
 }
 
 // ============================================================================
@@ -141,6 +142,7 @@ function buildManifest(projectRoot: string): Record<ToolName, SkillEntry[]> {
 async function runSetup(
   projectRoot: string,
   tools: ToolName[],
+  force: boolean,
 ): Promise<SetupResult[]> {
   const manifest = buildManifest(projectRoot);
   const results: SetupResult[] = [];
@@ -151,11 +153,11 @@ async function runSetup(
         logger.warning(`setup: source not found — ${entry.src} (re-install spec-gen to fix)`);
         continue;
       }
-      const created = await copyIfAbsent(entry.src, entry.dest);
+      const status = await copyFile(entry.src, entry.dest, force);
       const rel = entry.dest.startsWith(projectRoot)
         ? entry.dest.slice(projectRoot.length).replace(/^\//, '')
         : entry.dest;
-      results.push({ tool, rel, created });
+      results.push({ tool, rel, status });
     }
   }
 
@@ -176,11 +178,16 @@ export const setupCommand = new Command('setup')
     'Comma-separated list of tools to install: vibe, cline, claude, opencode, gsd, bmad (default: all)',
   )
   .option(
+    '--force',
+    'Overwrite existing files (use after upgrading spec-gen to pull in updated skills)',
+    false,
+  )
+  .option(
     '--dir <path>',
     'Project root directory',
     process.cwd(),
   )
-  .action(async (options: { tools?: string; dir: string }) => {
+  .action(async (options: { tools?: string; force: boolean; dir: string }) => {
     const projectRoot = options.dir;
     const allTools: ToolName[] = ['vibe', 'cline', 'gsd', 'bmad', 'claude', 'opencode'];
 
@@ -221,7 +228,7 @@ export const setupCommand = new Command('setup')
 
     let results: SetupResult[];
     try {
-      results = await runSetup(projectRoot, tools);
+      results = await runSetup(projectRoot, tools, options.force);
     } catch (err) {
       logger.error(`setup failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
@@ -244,24 +251,26 @@ export const setupCommand = new Command('setup')
 
     for (const tool of tools) {
       const entries = byTool[tool] ?? [];
-      const created = entries.filter(e => e.created).length;
-      const skipped = entries.filter(e => !e.created).length;
+      const created = entries.filter(e => e.status === 'created').length;
+      const updated = entries.filter(e => e.status === 'updated').length;
+      const skipped = entries.filter(e => e.status === 'skipped').length;
       console.log(`\n${LABELS[tool as ToolName]}`);
       for (const e of entries) {
-        console.log(`  ${e.created ? '✓ created' : '– exists '} ${e.rel}`);
+        const marker = e.status === 'created' ? '✓ created' : e.status === 'updated' ? '↑ updated' : '– exists ';
+        console.log(`  ${marker} ${e.rel}`);
       }
       if (entries.length === 0) {
         logger.warning('  (no source files found — check spec-gen installation)');
       } else {
-        console.log(`  ${created} created, ${skipped} already existed`);
+        console.log(`  ${created} created, ${updated} updated, ${skipped} already up-to-date`);
       }
     }
 
-    const totalCreated = results.filter(r => r.created).length;
-    if (totalCreated > 0) {
-      logger.success(`${totalCreated} file(s) installed.`);
+    const totalChanged = results.filter(r => r.status !== 'skipped').length;
+    if (totalChanged > 0) {
+      logger.success(`${totalChanged} file(s) installed.`);
       console.log('Run `spec-gen analyze --ai-configs` to also generate project-specific context files (CLAUDE.md, .cursorrules, etc.).');
     } else {
-      console.log('\nAll files already existed — nothing to do.');
+      console.log('\nAll files already up-to-date. Use --force to overwrite with the latest version.');
     }
   });
