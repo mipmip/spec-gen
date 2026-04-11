@@ -1,0 +1,6 @@
+{
+  "name": "tree-sitter-cli",
+  "version": "0.23.2",
+  "description": "Stub — prevents postinstall binary download in restricted networks. tree-sitter language packages ship prebuilds; the CLI is not needed at runtime.",
+  "license": "MIT"
+}

@@ -65,6 +65,7 @@
     "!dist/**/*.test.*",
     "src/viewer",
     "examples",
+    "stubs",
     "README.md",
     "LICENSE"
   ],
@@ -102,8 +103,8 @@
     "vite": "^7.1.3",
     "yaml": "^2.6.1"
   },
-  "optionalDependencies": {
-    "tree-sitter-cli": "^0.23"
+  "overrides": {
+    "tree-sitter-cli": "file:stubs/tree-sitter-cli-stub"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
