@@ -1,6 +1,6 @@
 # spec-gen
 
-Extract living specifications from any codebase. Enforce them as code evolves. Generate spec-driven tests from them. Review them as plain English. Eliminate codebase discovery overhead for AI agents — all from a single tool.
+Extract living specifications from any codebase. Enforce them as code evolves. Track spec test coverage. Review them as plain English. Eliminate codebase discovery overhead for AI agents — all from a single tool.
 
 ## The Problem
 
@@ -10,7 +10,7 @@ The same problem hits AI agents hard. Every new session starts from zero: the ag
 
 spec-gen solves both. It uses static analysis to understand your codebase structurally — call graph, dependency graph, domain clusters, critical hubs — then an LLM to extract what that code actually *does*, producing [OpenSpec](https://github.com/Fission-AI/OpenSpec)-compatible specifications grounded in reality, not aspiration. The result is absorbed by agents passively at session start, so they arrive with full architectural and business context already in place. Active MCP tools handle anything deeper: graph traversal, semantic search, insertion-point discovery, spec-drift checks.
 
-For human workflows: specs stay in sync via continuous drift detection, and `spec-gen test` turns every spec scenario into an executable test with real assertions — with a coverage gate you can enforce in CI.
+For human workflows: specs stay in sync via continuous drift detection, and `spec-gen test` tracks which spec scenarios have corresponding tests — with a coverage gate you can enforce in CI. AI agent skills (`spec-gen-write-tests`) write the actual tests.
 
 ## Capabilities at a Glance
 
@@ -18,8 +18,7 @@ For human workflows: specs stay in sync via continuous drift detection, and `spe
 |---|---|---|---|
 | Extract specs from existing code | `spec-gen generate` | Yes | Minutes |
 | Detect spec/code divergence | `spec-gen drift` | No | Milliseconds |
-| Generate spec-driven tests | `spec-gen test` | No *(LLM optional)* | Seconds |
-| Report spec test coverage | `spec-gen test --coverage` | No | Seconds |
+| Track spec test coverage | `spec-gen test` | No | Seconds |
 | Verify spec accuracy | `spec-gen verify` | Yes | Minutes |
 | Human-readable digest of all specs | `spec-gen digest` | No | Milliseconds |
 | Link drift to the tests that should run | `spec-gen drift --suggest-tests` | No | Milliseconds |
@@ -311,76 +310,45 @@ $ spec-gen drift --suggest-tests
    Run: npx vitest spec-tests/auth/Login.test.ts spec-tests/auth/Session.test.ts
 ```
 
-If no spec-gen test files exist yet for the affected domain, the command tells you to run `spec-gen test` to generate them first.
+If no tests with spec-gen annotation tags exist yet for the affected domain, run the `spec-gen-write-tests` skill to write them.
 
 ## Spec-Driven Tests
 
-`spec-gen test` turns every OpenSpec scenario into an executable test. It reads `#### Scenario:` blocks from your spec files, extracts Given/When/Then structure, and generates test files — with real assertions, not just `expect(true).toBe(true)`.
+`spec-gen test` reports which OpenSpec scenarios have corresponding tests. Tests are written by AI agent skills — not auto-generated — so every assertion is real.
 
-### Quick Examples
+### Writing tests
 
-```bash
-spec-gen test                              # Auto-detect framework, generate all
-spec-gen test --framework pytest           # Force Python/pytest output
-spec-gen test --framework gtest            # C++ Google Test
-spec-gen test --domains auth,tasks         # Only specific domains
-spec-gen test --dry-run                    # Preview without writing
-spec-gen test --use-llm                    # Enrich assertions using LLM + mapped functions
-spec-gen test --merge                      # Append new scenarios to existing files
+Use the `spec-gen-write-tests` skill to write tests for a function or spec scenario. The skill reads the implementation and spec contract first, absorbs the local test conventions, writes real assertions, runs and fixes failures, then reports coverage.
 
-spec-gen test --coverage                   # Show spec test coverage report
-spec-gen test --coverage --min-coverage 80 # Fail CI if coverage < 80%
-spec-gen test --coverage --json            # Machine-readable output
+```
+Vibe:  /spec-gen-write-tests
+Cline: .clinerules/workflows/spec-gen-write-tests.md
 ```
 
-### Framework Support
-
-| Framework | Language | Extension | Auto-detected from |
-|---|---|---|---|
-| `vitest` *(default)* | TypeScript / JavaScript | `.spec.ts` | `package.json` vitest dependency |
-| `playwright` | TypeScript / JavaScript | `.spec.ts` | `package.json` playwright dependency |
-| `pytest` | Python | `_test.py` | `pyproject.toml` / `setup.py` |
-| `gtest` | C++ | `_test.cpp` | `CMakeLists.txt` / `*.cmake` |
-| `catch2` | C++ | `_test.cpp` | `CMakeLists.txt` / `*.cmake` |
-
-### Generated Output
-
-Each scenario becomes a test function. The THEN clause pattern engine generates real assertions where possible:
+The skill is language-agnostic (TypeScript, Python, C++, Go) and detects the test framework automatically (vitest, pytest, gtest, …). Each written test carries an annotation tag so coverage tracking works:
 
 ```typescript
 // spec-gen: {"domain":"auth","requirement":"UserLogin","scenario":"SuccessfulLogin","specFile":"openspec/specs/auth/spec.md"}
 describe("Auth / UserLogin / SuccessfulLogin", () => {
-  it("should satisfy spec scenario", async () => {
-    // GIVEN: a registered user with email "alice@test.com" and a valid password
-    // WHEN: POST /api/auth/login is called with those credentials
-    // THEN: the system returns a JWT token, expiry time, and userId with status 200
-
-    // RELATED IMPLEMENTATION:
-    // - src/auth/auth-service.ts: login() [llm]
-
+  it("should return a JWT token and userId with status 200", async () => {
+    const response = await loginUser({ email: "alice@test.com", password: "valid" });
     expect(response.status).toBe(200);
     expect(response.body).toHaveProperty("token");
-    expect(response.body).toHaveProperty("expiry");
     expect(response.body).toHaveProperty("userId");
   });
 });
 ```
 
-The `// spec-gen:` metadata tag is parseable by `spec-gen test --coverage` — move the test to any file and coverage tracking still works.
+```python
+# spec-gen: {"domain":"auth","requirement":"UserLogin","scenario":"SuccessfulLogin"}
+class TestLogin:
+    def test_returns_jwt_token_with_status_200(self):
+        response = client.post("/auth/login", json={"email": "alice@test.com", "password": "valid"})
+        assert response.status_code == 200
+        assert "token" in response.json()
+```
 
-### THEN Clause Pattern Engine
-
-Without `--use-llm`, the pattern engine derives assertions from the THEN clause text:
-
-| THEN clause pattern | Generated assertion (Vitest) |
-|---|---|
-| `returns status 200` | `expect(response.status).toBe(200)` |
-| `returns status 401 with error "..."` | `expect(response.status).toBe(401)` + error field check |
-| `returns a JWT token, expiry time, and userId` | `expect(body).toHaveProperty("token")` × 3 |
-| `creates the task with status "todo"` | `expect(result).toHaveProperty("status", "todo")` |
-| *(unmatched)* | `expect(true).toBe(true) // TODO: implement` |
-
-`--use-llm` reads the source code of mapped functions and sends the scenario + code to the LLM, which fills in the unmatched clauses with real assertions.
+The `// spec-gen:` tag is location-independent — move the test to any file and coverage tracking still works.
 
 ### Spec Coverage
 
@@ -407,51 +375,17 @@ $ spec-gen test --coverage
      ...
 ```
 
-Domains with active drift issues are flagged, helping you prioritize which tests to write first.
+Domains with active drift issues are flagged — prioritize writing tests there first.
 
-### Priority and Business Logic Controls
-
-Annotate scenarios directly in the spec file to control generation behavior:
-
-```markdown
-#### Scenario: SuccessfulLogin
-<!-- spec-gen-test: priority=high tags=smoke,regression -->
-- **GIVEN** a registered user...
-
-#### Scenario: LegacyTokenBackcompat
-<!-- spec-gen-test: skip reason="deprecated in v3, tracked in #1234" -->
-- **GIVEN** an old-format token...
-```
-
-These annotations are **auto-generated** by `spec-gen generate` using keyword heuristics:
-- `tags=smoke` → scenario name/THEN contains *success, valid, create, register*
-- `tags=regression` → contains *invalid, error, fail, missing, reject, expired*
-- `priority=high` → contains *auth, login, jwt, token, payment, permission, security*
-- `priority=low` → contains *legacy, deprecated, backcompat*
-
-Override them manually after generation. The `--tags` and `--exclude-domains` flags respect these annotations at runtime:
-
-```bash
-spec-gen test --tags smoke             # Only smoke scenarios
-spec-gen test --exclude-domains legacy # Skip the legacy domain
-```
-
-### Test Options
+### Coverage Options
 
 ```bash
 spec-gen test [options]
-  --framework <name>       vitest | playwright | pytest | gtest | catch2 | auto
-  --domains <list>         Only generate tests for these domains (comma-separated)
-  --exclude-domains <list> Skip these domains
-  --tags <list>            Only include scenarios carrying ALL these tags
-  --output <path>          Output directory (default: spec-tests/)
-  --merge                  Append new scenarios to existing test files
-  --dry-run                Preview what would be generated without writing
-  --use-llm                Use LLM to generate assertions for unmatched THEN clauses
-  --limit <n>              Maximum number of scenarios to process
-  --coverage               Show spec test coverage report
+  --domains <list>         Only report on specific domains (comma-separated)
   --min-coverage <n>       Fail if effective coverage is below N% (CI gate)
-  --test-dirs <list>       Directories to scan for coverage (default: spec-tests,src)
+  --discover               Semantic discovery of tests without annotation tags (requires --use-llm)
+  --use-llm                Enable LLM for --discover
+  --test-dirs <list>       Directories to scan (default: spec-tests,src)
   --json                   Machine-readable JSON output
 ```
 
