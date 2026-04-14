@@ -1,12 +1,32 @@
 # spec-gen
 
-Reverse-engineer [OpenSpec](https://github.com/Fission-AI/OpenSpec) specifications from existing codebases, then keep them in sync as code evolves.
+Extract living specifications from any codebase. Enforce them as code evolves. Track spec test coverage. Review them as plain English. Eliminate codebase discovery overhead for AI agents — all from a single tool.
 
 ## The Problem
 
-Most software has no specification. The code is the spec, scattered across thousands of files, tribal knowledge, and stale documentation. Tools like `openspec init` create empty scaffolding, but someone still has to write everything. By the time specs are written manually, the code has already changed.
+Most software has no specification. The code is the spec — scattered across thousands of files, tribal knowledge, and documentation that was accurate six months ago. Tools like `openspec init` create empty scaffolding, but someone still has to fill it in. By the time specs are written manually, the code has already moved on.
 
-spec-gen automates this. It analyzes your codebase through static analysis, generates structured specifications using an LLM, and continuously detects when code and specs fall out of sync. It also exposes the analysis as an MCP server so AI agents can navigate your codebase with GraphRAG-style retrieval — semantic search combined with call-graph expansion and spec-linked peer discovery.
+The same problem hits AI agents hard. Every new session starts from zero: the agent reads files, runs grep, tries to infer architecture from directory names, and burns thousands of tokens just answering "what does this code do and where should I touch it?" — before writing a single line. Token budgets are real costs, and discovery is pure waste.
+
+spec-gen solves both. It uses static analysis to understand your codebase structurally — call graph, dependency graph, domain clusters, critical hubs — then an LLM to extract what that code actually *does*, producing [OpenSpec](https://github.com/Fission-AI/OpenSpec)-compatible specifications grounded in reality, not aspiration. The result is absorbed by agents passively at session start, so they arrive with full architectural and business context already in place. Active MCP tools handle anything deeper: graph traversal, semantic search, insertion-point discovery, spec-drift checks.
+
+For human workflows: specs stay in sync via continuous drift detection, and `spec-gen test` tracks which spec scenarios have corresponding tests — with a coverage gate you can enforce in CI. AI agent skills (`spec-gen-write-tests`) write the actual tests.
+
+## Capabilities at a Glance
+
+| What | Command | API key | Speed |
+|---|---|---|---|
+| Extract specs from existing code | `spec-gen generate` | Yes | Minutes |
+| Detect spec/code divergence | `spec-gen drift` | No | Milliseconds |
+| Track spec test coverage | `spec-gen test` | No | Seconds |
+| Verify spec accuracy | `spec-gen verify` | Yes | Minutes |
+| Human-readable digest of all specs | `spec-gen digest` | No | Milliseconds |
+| Link drift to the tests that should run | `spec-gen drift --suggest-tests` | No | Milliseconds |
+| Give agents pre-loaded architectural context | `spec-gen analyze` → `CODEBASE.md` | No | — |
+| Let agents navigate with graph-based tools | `spec-gen mcp` | No | — |
+| Inspect the dependency graph visually | `spec-gen view` | No | — |
+
+**Languages supported**: TypeScript · JavaScript · Python · Go · Rust · Ruby · Java · C++ · Swift
 
 ## Quick Start
 
@@ -113,7 +133,19 @@ Sends the analysis context to an LLM to produce specifications:
 
 Tests generated specs by predicting file contents from specs alone, then comparing predictions to actual code. Reports an accuracy score and identifies gaps.
 
-**4. Drift Detection** (no API key needed)
+**4. Test Generation** (no API key needed by default)
+
+Turns every spec scenario into an executable test skeleton — or a test with real assertions:
+- Parses `#### Scenario:` blocks from spec files and extracts Given/When/Then structure
+- THEN clause pattern engine generates real assertions without LLM (status codes, field presence, error messages...)
+- `--use-llm` reads mapped function source and enriches unmatched clauses with meaningful assertions
+- Supports **Vitest**, **Playwright**, **pytest**, **Google Test**, **Catch2** — auto-detected from your project
+- Each test is tagged with a parseable `// spec-gen:` metadata comment enabling coverage tracking
+- `--coverage` scans your existing test files and reports which scenarios have tests (by domain, with %)
+- `--min-coverage <n>` exits non-zero when coverage drops below threshold — CI gate for spec adherence
+- Business-logic controls: annotate scenarios with `<!-- spec-gen-test: priority=high tags=smoke -->` directly in the spec; annotations are auto-generated during `spec-gen generate`
+
+**5. Drift Detection** (no API key needed)
 
 Compares git changes against spec file mappings to find divergence:
 - **Gap**: Code changed but its spec was not updated
@@ -259,9 +291,155 @@ spec-gen drift              # Static mode: fast, deterministic
 spec-gen drift --use-llm    # LLM-enhanced: fewer false positives
 ```
 
+### Drift → Tests
+
+When drift is detected, `--suggest-tests` finds the test files that cover the affected domains and prints a ready-to-run command. It scans for `// spec-gen: {}` metadata tags written by `spec-gen test` — no LLM required.
+
+```bash
+$ spec-gen drift --suggest-tests
+
+   [ERROR] gap: src/auth/session.ts
+      Spec: openspec/specs/auth/spec.md
+
+   Suggested tests for affected domains:
+
+   auth  (2 files)
+     → spec-tests/auth/Login.test.ts
+     → spec-tests/auth/Session.test.ts
+
+   Run: npx vitest spec-tests/auth/Login.test.ts spec-tests/auth/Session.test.ts
+```
+
+If no tests with spec-gen annotation tags exist yet for the affected domain, run the `spec-gen-write-tests` skill to write them.
+
+## Spec-Driven Tests
+
+`spec-gen test` reports which OpenSpec scenarios have corresponding tests. Tests are written by AI agent skills — not auto-generated — so every assertion is real.
+
+### Writing tests
+
+Use the `spec-gen-write-tests` skill to write tests for a function or spec scenario. The skill reads the implementation and spec contract first, absorbs the local test conventions, writes real assertions, runs and fixes failures, then reports coverage.
+
+```
+Vibe:  /spec-gen-write-tests
+Cline: .clinerules/workflows/spec-gen-write-tests.md
+```
+
+The skill is language-agnostic (TypeScript, Python, C++, Go) and detects the test framework automatically (vitest, pytest, gtest, …). Each written test carries an annotation tag so coverage tracking works:
+
+```typescript
+// spec-gen: {"domain":"auth","requirement":"UserLogin","scenario":"SuccessfulLogin","specFile":"openspec/specs/auth/spec.md"}
+describe("Auth / UserLogin / SuccessfulLogin", () => {
+  it("should return a JWT token and userId with status 200", async () => {
+    const response = await loginUser({ email: "alice@test.com", password: "valid" });
+    expect(response.status).toBe(200);
+    expect(response.body).toHaveProperty("token");
+    expect(response.body).toHaveProperty("userId");
+  });
+});
+```
+
+```python
+# spec-gen: {"domain":"auth","requirement":"UserLogin","scenario":"SuccessfulLogin"}
+class TestLogin:
+    def test_returns_jwt_token_with_status_200(self):
+        response = client.post("/auth/login", json={"email": "alice@test.com", "password": "valid"})
+        assert response.status_code == 200
+        assert "token" in response.json()
+```
+
+The `// spec-gen:` tag is location-independent — move the test to any file and coverage tracking still works.
+
+### Spec Coverage
+
+```bash
+$ spec-gen test --coverage
+
+   Spec Test Coverage Report
+   ─────────────────────────────────────────
+
+   Total scenarios:    24
+   Covered (tagged):   16
+   Uncovered:           8
+   Effective coverage: 66.7%  (target: 80%) ✗ below threshold
+
+   By domain:
+     auth                   5/6   (83%) ✓
+     tasks                  4/6   (67%) ⚠ drift detected
+     projects               7/8   (87%) ✓
+     database               0/4    (0%) — no tests yet
+
+   Uncovered scenarios:
+     auth/UserLogin/MissingFields
+     tasks/CreateTask/DuplicateTitle
+     ...
+```
+
+Domains with active drift issues are flagged — prioritize writing tests there first.
+
+### Coverage Options
+
+```bash
+spec-gen test [options]
+  --domains <list>         Only report on specific domains (comma-separated)
+  --min-coverage <n>       Fail if effective coverage is below N% (CI gate)
+  --discover               Semantic discovery of tests without annotation tags (requires --use-llm)
+  --use-llm                Enable LLM for --discover
+  --test-dirs <list>       Directories to scan (default: spec-tests,src)
+  --json                   Machine-readable JSON output
+```
+
+## Spec Digest
+
+Specs are written for machines — `### Requirement:` / `#### Scenario:` / `- **GIVEN**` / `- **WHEN**` / `- **THEN**`. The format is intentional and powers all the tooling. But it makes human review tedious.
+
+`spec-gen digest` reads your existing spec files and renders them as plain English — one line per scenario, no boilerplate. Source files are never touched.
+
+```bash
+spec-gen digest                        # Print to stdout
+spec-gen digest --save                 # Write to openspec/digest.md
+spec-gen digest --output review.md     # Write to a custom path
+spec-gen digest --domains auth,payment # Only selected domains
+```
+
+Example output:
+
+```markdown
+# Spec Digest
+
+_3 domains · 8 requirements · 21 scenarios_
+
+> Auto-generated by `spec-gen digest`. Source specs are unchanged.
+
+## Auth
+
+Handles login, logout, and session management.
+
+**Login**
+
+- **ValidCredentials**: User submits valid credentials → session token returned.
+- **InvalidCredentials**: Invalid credentials submitted → 401 with error message.
+
+**PasswordReset**
+
+- **TokenRequested**: User requests a password reset → email sent with time-limited token.
+- **TokenExpired**: An expired reset token is used → request rejected with clear message.
+
+## Payment
+
+Processes charges and manages billing state.
+
+**Checkout**
+
+- **Success**: Valid card and basket submitted → charge created, order confirmed.
+- **DeclinedCard**: Declined card submitted → order rejected, user notified.
+```
+
+No API key required. Fast and deterministic.
+
 ## CI/CD Integration
 
-spec-gen is designed to run in automated pipelines. The deterministic commands (`init`, `analyze`, `drift`) need no API key and produce consistent results.
+spec-gen is designed to run in automated pipelines. The deterministic commands (`init`, `analyze`, `drift`, `test`, `digest`) need no API key and produce consistent results.
 
 ### Pre-Commit Hook
 
@@ -477,7 +655,11 @@ Priority: CLI flags > environment variables > config file > provider defaults.
 | `spec-gen verify` | Verify spec accuracy | Yes |
 | `spec-gen drift` | Detect spec drift (static) | No |
 | `spec-gen drift --use-llm` | Detect spec drift (LLM-enhanced) | Yes |
+| `spec-gen drift --suggest-tests` | After drift, list test files covering affected domains | No |
 | `spec-gen audit` | Report spec coverage gaps: uncovered functions, hub gaps, stale domains | No |
+| `spec-gen test` | Generate spec-driven tests (Vitest / Playwright / pytest / GTest / Catch2) | No |
+| `spec-gen test --coverage` | Report which spec scenarios have corresponding tests | No |
+| `spec-gen digest` | Plain-English summary of all specs for human review | No |
 | `spec-gen run` | Full pipeline: init, analyze, generate | Yes |
 | `spec-gen view` | Launch interactive graph & spec viewer in the browser | No |
 | `spec-gen setup` | Install workflow skills into the project (Vibe, Cline, GSD, BMAD) | No |
@@ -513,6 +695,7 @@ spec-gen drift [options]
   --fail-on <severity>   # Exit non-zero threshold: error, warning, info
   --max-files <n>        # Max changed files to analyze (default: 100)
   --verbose              # Show detailed issue information
+  --suggest-tests        # List test files covering drifted domains
   --install-hook         # Install pre-commit hook
   --uninstall-hook       # Remove pre-commit hook
 ```
@@ -626,18 +809,32 @@ Run `spec-gen doctor` whenever setup instructions aren't working — it tells yo
 
 ## Agent Setup
 
+Agents working on an unfamiliar codebase spend the first quarter of every session on discovery: reading files, running grep, inferring architecture from directory names. Each of those file reads costs tokens. On a large codebase, an agent can burn **tens of thousands of tokens** just answering "where do I even start?" — before writing a single line of useful code.
+
+spec-gen eliminates this overhead. Run it once, wire two files into your agent's context, and every subsequent session starts with the agent already knowing:
+
+- which functions are the highest-risk hubs to touch carefully
+- where execution enters the system
+- which business domains exist and what each one does
+- how calls flow between files
+- which specs govern which files
+
+The agent arrives informed. No discovery pass. No token budget spent on orientation.
+
 ### Passive context vs active tools
 
-Agents have two ways to acquire knowledge about your codebase:
+There are two ways an agent acquires codebase knowledge:
 
-- **Passive (zero friction):** files referenced in `CLAUDE.md` / `.clinerules` are read automatically at session start, before the agent even processes your first message. No decision required, no tool call to make.
-- **Active (friction):** MCP tools must be consciously selected from a list, called, and their output integrated into context. Even when the information would help, agents often skip this step and read files directly instead — it's always the safe fallback.
+- **Passive (zero friction, low token cost):** files listed in `CLAUDE.md` / `.clinerules` are injected at session start, before the agent processes your first message. No decision required, no tool calls, no extra round-trips.
+- **Active (friction, per-call token cost):** MCP tools must be consciously selected, called, and their output integrated. Even when the information would help, agents often skip this and read files directly — it's always the safe fallback, but it's expensive.
 
-This means architectural context delivered passively is far more reliably absorbed than context behind a tool call. `spec-gen analyze` generates `.spec-gen/analysis/CODEBASE.md` specifically for this purpose: a compact, agent-optimized digest (~100 lines) that agents absorb at session start without any decision cost.
+Architectural context delivered passively is far more reliably absorbed and far cheaper. `spec-gen analyze` generates `.spec-gen/analysis/CODEBASE.md` for exactly this purpose: a compact, ~100-line digest that costs a fraction of what reading the equivalent source files would — and it's already pre-digested into what the agent actually needs.
+
+When passive context isn't enough, the MCP tools replace expensive multi-file reads with a single targeted call. `orient` — the main entry point — returns relevant functions, their call neighbours, matching spec sections, and insertion-point candidates in **one round-trip** instead of a dozen `Read` calls.
 
 ### What CODEBASE.md contains
 
-Generated from the static analysis artifacts, it surfaces what an agent most needs before touching code:
+Generated from static analysis artifacts, it surfaces what an agent needs before touching code — in ~100 lines instead of reading dozens of source files:
 
 - **Entry points** — functions with no internal callers (where execution starts)
 - **Critical hubs** — highest fan-in functions (most risky to modify)
@@ -646,7 +843,7 @@ Generated from the static analysis artifacts, it surfaces what an agent most nee
 - **God functions / oversized orchestrators** — complexity hotspots
 - **Layer violations** — if any
 
-This is structural signal, not prose. It complements `openspec/specs/overview/spec.md`, which provides the functional view (what the system does, what domains exist). Together they give agents both the architectural topology and the business intent.
+This is structural signal, not prose. It pairs with `openspec/specs/overview/spec.md`, which provides the functional view: what the system does, what domains exist, data-flow requirements. Together they give agents both the architectural topology and the business intent — **at the cost of two small file reads instead of an unbounded exploration loop**.
 
 ### Setup
 

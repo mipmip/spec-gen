@@ -3,13 +3,6 @@ name: spec-gen-plan-refactor
 description: Identify the highest-priority refactoring target using static analysis, assess its blast radius, and produce a detailed written plan saved to .spec-gen/refactor-plan.md. Makes no code changes.
 license: MIT
 compatibility: spec-gen MCP server
-user-invocable: true
-allowed-tools:
-  - ask_followup_question
-  - use_mcp_tool
-  - read_file
-  - write_file
-  - spec-gen-analyze-codebase
 ---
 
 # spec-gen: Plan Refactor
@@ -37,7 +30,7 @@ Each change = one atomic edit → one diff verification → one full test run �
 This is not a final gate at the end. Testing is a mandatory sub-step after **every single change**.
 The plan must make this cycle explicit and impossible to skip.
 
-**For Devstral Small 2**: each change must touch at most **50 contiguous lines** in the source file.
+**For small models (< 13B parameters)**: each change must touch at most **50 contiguous lines** in the source file.
 If a logical extraction exceeds this limit, split it into smaller sub-changes, each with its own test gate.
 
 ---
@@ -59,27 +52,15 @@ Ask the user which project to analyze, or confirm the current workspace root.
 
 ## Step 2 — Run static analysis
 
-Analyze the project via the `spec-gen` MCP server. If a recent analysis already exists, skip unless the user explicitly requests a fresh run.
+Call the spec-gen MCP tool `analyze_codebase` with `{"directory": "$DIRECTORY"}`.
 
-```xml
-<use_mcp_tool>
-  <server_name>spec-gen</server_name>
-  <tool_name>analyze_codebase</tool_name>
-  <arguments>{"directory": "$DIRECTORY"}</arguments>
-</use_mcp_tool>
-```
+If a recent analysis already exists, skip unless the user explicitly requests a fresh run.
 
 ---
 
 ## Step 3 — Get the refactoring report
 
-```xml
-<use_mcp_tool>
-  <server_name>spec-gen</server_name>
-  <tool_name>get_refactor_report</tool_name>
-  <arguments>{"directory": "$DIRECTORY"}</arguments>
-</use_mcp_tool>
-```
+Call the spec-gen MCP tool `get_refactor_report` with `{"directory": "$DIRECTORY"}`.
 
 Present the top 5 candidates:
 
@@ -90,13 +71,7 @@ Present the top 5 candidates:
 
 ## Step 3b — Check for duplicate code
 
-```xml
-<use_mcp_tool>
-  <server_name>spec-gen</server_name>
-  <tool_name>get_duplicate_report</tool_name>
-  <arguments>{"directory": "$DIRECTORY"}</arguments>
-</use_mcp_tool>
-```
+Call the spec-gen MCP tool `get_duplicate_report` with `{"directory": "$DIRECTORY"}`.
 
 If a top candidate appears in a clone group, prepend a **deduplication note** to the plan:
 > "⚠️ `<function>` has N near-clones. Consolidate them first to reduce the blast radius of this refactor."
@@ -136,13 +111,7 @@ If **all candidates are below 40%**:
 
 ## Step 4 — Analyze impact
 
-```xml
-<use_mcp_tool>
-  <server_name>spec-gen</server_name>
-  <tool_name>analyze_impact</tool_name>
-  <arguments>{"directory": "$DIRECTORY", "symbol": "$FUNCTION_NAME"}</arguments>
-</use_mcp_tool>
-```
+Call the spec-gen MCP tool `analyze_impact` with `{"directory": "$DIRECTORY", "symbol": "$FUNCTION_NAME"}`.
 
 Note: risk score (0–100), recommended strategy (`extract` / `split` / `facade` / `delegate`), top 5 upstream callers and downstream callees.
 
@@ -150,12 +119,9 @@ Note: risk score (0–100), recommended strategy (`extract` / `split` / `facade`
 
 ## Step 5 — Visualise the call neighbourhood
 
-```xml
-<use_mcp_tool>
-  <server_name>spec-gen</server_name>
-  <tool_name>get_subgraph</tool_name>
-  <arguments>{"directory": "$DIRECTORY", "functionName": "$FUNCTION_NAME", "direction": "both", "format": "mermaid"}</arguments>
-</use_mcp_tool>
+Call the spec-gen MCP tool `get_subgraph` with:
+```json
+{"directory": "$DIRECTORY", "functionName": "$FUNCTION_NAME", "direction": "both", "format": "mermaid"}
 ```
 
 Show the Mermaid diagram to the user.
@@ -164,12 +130,9 @@ Show the Mermaid diagram to the user.
 
 ## Step 6 — Find safe entry points (bottom-up)
 
-```xml
-<use_mcp_tool>
-  <server_name>spec-gen</server_name>
-  <tool_name>get_low_risk_refactor_candidates</tool_name>
-  <arguments>{"directory": "$DIRECTORY", "filePattern": "$TARGET_FILE", "limit": 5}</arguments>
-</use_mcp_tool>
+Call the spec-gen MCP tool `get_low_risk_refactor_candidates` with:
+```json
+{"directory": "$DIRECTORY", "filePattern": "$TARGET_FILE", "limit": 5}
 ```
 
 Cross-reference with the subgraph from Step 5: a good first extraction candidate already appears as a callee of the target function.
@@ -181,12 +144,9 @@ Cross-reference with the subgraph from Step 5: a good first extraction candidate
 Before designing the change sequence, identify where extracted functions should land.
 This avoids creating helpers in the wrong file or layer.
 
-```xml
-<use_mcp_tool>
-  <server_name>spec-gen</server_name>
-  <tool_name>suggest_insertion_points</tool_name>
-  <arguments>{"directory": "$DIRECTORY", "query": "extract helper from $FUNCTION_NAME", "limit": 5}</arguments>
-</use_mcp_tool>
+Call the spec-gen MCP tool `suggest_insertion_points` with:
+```json
+{"directory": "$DIRECTORY", "query": "extract helper from $FUNCTION_NAME", "limit": 5}
 ```
 
 For each candidate, note its role and strategy. Prefer candidates that already call into — or are called by — the target function (visible in the Step 5 subgraph).
@@ -197,7 +157,7 @@ For each candidate, note its role and strategy. Prefer candidates that already c
 
 Design an ordered sequence of atomic changes based on the strategy from Step 4.
 
-### Size constraint (mandatory for Devstral Small 2)
+### Size constraint (mandatory for small models)
 
 **Each change must touch at most 50 contiguous lines** in the source file.
 If a logical extraction requires moving more than 50 lines in one pass, split it into sub-changes:

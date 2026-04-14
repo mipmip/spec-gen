@@ -21,6 +21,8 @@ import { doctorCommand } from './commands/doctor.js';
 import { setupCommand } from './commands/setup.js';
 import { refreshStoriesCommand } from './commands/refresh-stories.js';
 import { auditCommand } from './commands/audit.js';
+import { testCommand } from './commands/test.js';
+import { digestCommand } from './commands/digest.js';
 import { configureLogger } from '../utils/logger.js';
 
 // Read version from package.json at runtime so it never drifts from the published version
@@ -82,6 +84,8 @@ Workflow:
   6. spec-gen generate                Create OpenSpec files using LLM
   7. spec-gen verify                  Validate specs against source code
   8. spec-gen drift                   Detect when code outpaces specs
+  9. spec-gen test                    Generate spec-driven tests or check coverage
+  10. spec-gen digest                  Plain-English summary of specs for human review
 
 Quick start:
   $ cd your-project
@@ -124,5 +128,7 @@ program.addCommand(doctorCommand);
 program.addCommand(setupCommand);
 program.addCommand(refreshStoriesCommand);
 program.addCommand(auditCommand);
+program.addCommand(testCommand);
+program.addCommand(digestCommand);
 
 program.parse();

@@ -5,8 +5,10 @@
  * Unlike `analyze --ai-configs` (which generates project-specific context files),
  * `setup` copies static workflow assets that are the same for every project:
  *
- *   - Mistral Vibe skills  -> .vibe/skills/spec-gen-{name}/SKILL.md  (7 skills)
+ *   - Mistral Vibe skills  -> .vibe/skills/spec-gen-{name}/SKILL.md      (8 skills)
  *   - Cline workflows      -> .clinerules/workflows/spec-gen-{name}.md
+ *   - Claude Code skills   -> .claude/skills/spec-gen-{name}/SKILL.md    (8 skills)
+ *   - OpenCode skills      -> .opencode/skills/spec-gen-{name}/SKILL.md  (8 skills)
  *   - GSD commands         -> .claude/commands/gsd/spec-gen-{name}.md
  *
  * Files are never overwritten — existing files are skipped silently.
@@ -24,7 +26,7 @@ import { logger } from '../../utils/logger.js';
 // TYPES
 // ============================================================================
 
-type ToolName = 'vibe' | 'cline' | 'gsd' | 'bmad';
+type ToolName = 'vibe' | 'cline' | 'gsd' | 'bmad' | 'claude' | 'opencode';
 
 interface SkillEntry {
   /** Absolute source path inside the package's examples/ directory */
@@ -36,7 +38,7 @@ interface SkillEntry {
 interface SetupResult {
   tool: ToolName;
   rel: string;
-  created: boolean;
+  status: 'created' | 'updated' | 'skipped';
 }
 
 // ============================================================================
@@ -52,12 +54,13 @@ async function fileExists(p: string): Promise<boolean> {
   try { await access(p); return true; } catch { return false; }
 }
 
-async function copyIfAbsent(src: string, dest: string): Promise<boolean> {
-  if (await fileExists(dest)) return false;
+async function copyFile(src: string, dest: string, force: boolean): Promise<'created' | 'updated' | 'skipped'> {
+  const exists = await fileExists(dest);
+  if (exists && !force) return 'skipped';
   const content = await readFile(src, 'utf-8');
   await mkdir(dirname(dest), { recursive: true });
   await writeFile(dest, content, 'utf-8');
-  return true;
+  return exists ? 'updated' : 'created';
 }
 
 // ============================================================================
@@ -75,7 +78,10 @@ function buildManifest(projectRoot: string): Record<ToolName, SkillEntry[]> {
     'spec-gen-generate',
     'spec-gen-implement-story',
     'spec-gen-plan-refactor',
+    'spec-gen-write-tests',
   ];
+
+  const OPENCODE_SKILLS = VIBE_SKILLS; // same skill names, different source + dest
 
   const CLINE_WORKFLOWS = [
     'spec-gen-analyze-codebase.md',
@@ -84,6 +90,7 @@ function buildManifest(projectRoot: string): Record<ToolName, SkillEntry[]> {
     'spec-gen-implement-feature.md',
     'spec-gen-plan-refactor.md',
     'spec-gen-refactor-codebase.md',
+    'spec-gen-write-tests.md',
   ];
 
   const GSD_COMMANDS = [
@@ -117,6 +124,14 @@ function buildManifest(projectRoot: string): Record<ToolName, SkillEntry[]> {
         dest: join(projectRoot, '_bmad', 'spec-gen', 'tasks', file),
       })),
     ],
+    claude: OPENCODE_SKILLS.map(name => ({
+      src: join(ex, 'opencode-skills', name, 'SKILL.md'),
+      dest: join(projectRoot, '.claude', 'skills', name, 'SKILL.md'),
+    })),
+    opencode: OPENCODE_SKILLS.map(name => ({
+      src: join(ex, 'opencode-skills', name, 'SKILL.md'),
+      dest: join(projectRoot, '.opencode', 'skills', name, 'SKILL.md'),
+    })),
   };
 }
 
@@ -127,6 +142,7 @@ function buildManifest(projectRoot: string): Record<ToolName, SkillEntry[]> {
 async function runSetup(
   projectRoot: string,
   tools: ToolName[],
+  force: boolean,
 ): Promise<SetupResult[]> {
   const manifest = buildManifest(projectRoot);
   const results: SetupResult[] = [];
@@ -137,11 +153,11 @@ async function runSetup(
         logger.warning(`setup: source not found — ${entry.src} (re-install spec-gen to fix)`);
         continue;
       }
-      const created = await copyIfAbsent(entry.src, entry.dest);
+      const status = await copyFile(entry.src, entry.dest, force);
       const rel = entry.dest.startsWith(projectRoot)
         ? entry.dest.slice(projectRoot.length).replace(/^\//, '')
         : entry.dest;
-      results.push({ tool, rel, created });
+      results.push({ tool, rel, status });
     }
   }
 
@@ -159,32 +175,39 @@ export const setupCommand = new Command('setup')
   )
   .option(
     '--tools <list>',
-    'Comma-separated list of tools to install: vibe, cline, gsd (default: all)',
+    'Comma-separated list of tools to install: vibe, cline, claude, opencode, gsd, bmad (default: all)',
+  )
+  .option(
+    '--force',
+    'Overwrite existing files (use after upgrading spec-gen to pull in updated skills)',
+    false,
   )
   .option(
     '--dir <path>',
     'Project root directory',
     process.cwd(),
   )
-  .action(async (options: { tools?: string; dir: string }) => {
+  .action(async (options: { tools?: string; force: boolean; dir: string }) => {
     const projectRoot = options.dir;
-    const allTools: ToolName[] = ['vibe', 'cline', 'gsd', 'bmad'];
+    const allTools: ToolName[] = ['vibe', 'cline', 'gsd', 'bmad', 'claude', 'opencode'];
 
     let tools: ToolName[];
     if (options.tools) {
       tools = (options.tools.split(',').map(t => t.trim()) as ToolName[]).filter(t => allTools.includes(t));
       if (tools.length === 0) {
-        logger.error('setup: no valid tools specified. Valid values: vibe, cline, gsd, bmad');
+        logger.error('setup: no valid tools specified. Valid values: vibe, cline, gsd, bmad, claude, opencode');
         process.exit(1);
       }
     } else if (process.stdout.isTTY) {
       const selected = await checkbox({
         message: 'Which agent tools do you want to install skills for?',
         choices: [
-          { name: 'Mistral Vibe  (.vibe/skills/spec-gen-{name}/SKILL.md — 7 skills)', value: 'vibe' as ToolName, checked: true },
-          { name: 'Cline / Roo   (.clinerules/workflows/spec-gen-{name}.md — 6 workflows)', value: 'cline' as ToolName, checked: true },
-          { name: 'GSD           (.claude/commands/gsd/spec-gen-{name}.md — 2 commands)', value: 'gsd' as ToolName, checked: true },
-          { name: 'BMAD          (_bmad/spec-gen/{agents,tasks}/ — 2 agents, 4 tasks)', value: 'bmad' as ToolName, checked: false },
+          { name: 'Mistral Vibe  (.vibe/skills/spec-gen-{name}/SKILL.md — 8 skills)', value: 'vibe' as ToolName },
+          { name: 'Cline / Roo   (.clinerules/workflows/spec-gen-{name}.md — 7 workflows)', value: 'cline' as ToolName },
+          { name: 'Claude Code   (.claude/skills/spec-gen-{name}/SKILL.md — 8 skills)', value: 'claude' as ToolName },
+          { name: 'OpenCode      (.opencode/skills/spec-gen-{name}/SKILL.md — 8 skills)', value: 'opencode' as ToolName },
+          { name: 'GSD           (.claude/commands/gsd/spec-gen-{name}.md — 2 commands)', value: 'gsd' as ToolName },
+          { name: 'BMAD          (_bmad/spec-gen/{agents,tasks}/ — 2 agents, 4 tasks)', value: 'bmad' as ToolName },
         ],
       });
       if (selected.length === 0) {
@@ -193,15 +216,19 @@ export const setupCommand = new Command('setup')
       }
       tools = selected;
     } else {
-      // Non-TTY: install all except BMAD (more invasive, requires existing BMAD setup)
-      tools = ['vibe', 'cline', 'gsd'];
+      logger.error(
+        'setup requires an interactive terminal.\n' +
+        'Use --tools to specify which to install.\n' +
+        'Example: spec-gen setup --tools claude,cline'
+      );
+      process.exit(1);
     }
 
     logger.success(`Installing workflow skills into ${projectRoot}`);
 
     let results: SetupResult[];
     try {
-      results = await runSetup(projectRoot, tools);
+      results = await runSetup(projectRoot, tools, options.force);
     } catch (err) {
       logger.error(`setup failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
@@ -214,32 +241,36 @@ export const setupCommand = new Command('setup')
     }
 
     const LABELS: Record<ToolName, string> = {
-      vibe:  'Mistral Vibe',
-      cline: 'Cline / Roo Code',
-      gsd:   'get-shit-done (GSD)',
-      bmad:  'BMAD',
+      vibe:     'Mistral Vibe',
+      cline:    'Cline / Roo Code',
+      claude:   'Claude Code',
+      opencode: 'OpenCode',
+      gsd:      'get-shit-done (GSD)',
+      bmad:     'BMAD',
     };
 
     for (const tool of tools) {
       const entries = byTool[tool] ?? [];
-      const created = entries.filter(e => e.created).length;
-      const skipped = entries.filter(e => !e.created).length;
+      const created = entries.filter(e => e.status === 'created').length;
+      const updated = entries.filter(e => e.status === 'updated').length;
+      const skipped = entries.filter(e => e.status === 'skipped').length;
       console.log(`\n${LABELS[tool as ToolName]}`);
       for (const e of entries) {
-        console.log(`  ${e.created ? '✓ created' : '– exists '} ${e.rel}`);
+        const marker = e.status === 'created' ? '✓ created' : e.status === 'updated' ? '↑ updated' : '– exists ';
+        console.log(`  ${marker} ${e.rel}`);
       }
       if (entries.length === 0) {
         logger.warning('  (no source files found — check spec-gen installation)');
       } else {
-        console.log(`  ${created} created, ${skipped} already existed`);
+        console.log(`  ${created} created, ${updated} updated, ${skipped} already up-to-date`);
       }
     }
 
-    const totalCreated = results.filter(r => r.created).length;
-    if (totalCreated > 0) {
-      logger.success(`${totalCreated} file(s) installed.`);
+    const totalChanged = results.filter(r => r.status !== 'skipped').length;
+    if (totalChanged > 0) {
+      logger.success(`${totalChanged} file(s) installed.`);
       console.log('Run `spec-gen analyze --ai-configs` to also generate project-specific context files (CLAUDE.md, .cursorrules, etc.).');
     } else {
-      console.log('\nAll files already existed — nothing to do.');
+      console.log('\nAll files already up-to-date. Use --force to overwrite with the latest version.');
     }
   });
