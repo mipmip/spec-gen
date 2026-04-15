@@ -22,7 +22,10 @@
 
             src = ./.;
 
-            npmDepsHash = "sha256-cjPSzdyG3LrSKPwObVXU0YBAFjibi2kx45lItd0zv2w=";
+            npmDepsFetcherVersion = 2;
+            makeCacheWritable = true;
+            npmDepsHash = "sha256-oA3iPvZwKCIdt8K21LgWNHjz62ohgsvgAy5/217GGxs=";
+            npmFlags = [ "--omit=optional" ];
 
             # Build TypeScript
             buildPhase = ''
@@ -39,6 +42,10 @@
 
               # Copy node_modules for runtime dependencies
               cp -r node_modules $out/lib/node_modules/spec-gen/
+
+              # tree-sitter-swift creates a stub symlink for tree-sitter-cli
+              # that dangles when optional deps are omitted — remove it.
+              find $out -xtype l -name tree-sitter-cli -delete
 
               # Create bin wrapper (ESM — must use import(), not require())
               mkdir -p $out/bin
