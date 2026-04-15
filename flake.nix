@@ -18,11 +18,14 @@
         {
           default = pkgs.buildNpmPackage {
             pname = "spec-gen";
-            version = "1.0.0";
+            version = "1.3.0";
 
             src = ./.;
 
-            npmDepsHash = "sha256-5l/gdzyivfA5w5/0GA5vte3NY7AMfoFsqMvWgkzfM1A=";
+            npmDepsFetcherVersion = 2;
+            makeCacheWritable = true;
+            npmDepsHash = "sha256-Ym+mY2roiSWw5pp5IIbTfDKYCB9bQ6mFccvj+m5ODsQ=";
+            npmFlags = [ "--omit=optional" ];
 
             # Build TypeScript
             buildPhase = ''
@@ -39,6 +42,10 @@
 
               # Copy node_modules for runtime dependencies
               cp -r node_modules $out/lib/node_modules/spec-gen/
+
+              # tree-sitter-swift creates a stub symlink for tree-sitter-cli
+              # that dangles when optional deps are omitted — remove it.
+              find $out -xtype l -name tree-sitter-cli -delete
 
               # Create bin wrapper (ESM — must use import(), not require())
               mkdir -p $out/bin

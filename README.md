@@ -102,6 +102,14 @@ nix develop
 npm run dev
 ```
 
+**Updating the flake after a release:**
+
+```bash
+./scripts/update-flake.sh
+```
+
+Syncs `version` and `npmDepsHash` in `flake.nix` from `package.json`. Requires `jq` and `prefetch-npm-deps` (or `nix-shell`).
+
 </details>
 
 ## What It Does
